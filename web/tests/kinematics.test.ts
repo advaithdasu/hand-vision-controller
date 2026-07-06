@@ -93,8 +93,10 @@ describe("jacobian", () => {
 
 describe("solveLinear6", () => {
   it("solves a known system and returns its determinant", () => {
-    const A = Array.from({ length: 6 }, (_, i) =>
-      Array.from({ length: 6 }, (_, j) => (i === j ? 2 : i + j === 5 ? 0.5 : 0)),
+    const A: number[][] = Array.from({ length: 6 }, (_, i) =>
+      Array.from({ length: 6 }, (_, j): number =>
+        i === j ? 2 : i + j === 5 ? 0.5 : 0,
+      ),
     );
     const xTrue = [1, -2, 3, 0.5, -0.25, 4];
     const b = A.map((row) => row.reduce((s, v, j) => s + v * xTrue[j], 0));

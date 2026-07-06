@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hand-Controlled Robot Arm</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦾</text></svg>" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Hand-Controlled Robot Arm</h1>
+      <p class="tagline">
+        Your hand is the controller. Webcam → hand tracking → inverse
+        kinematics → physics, all in your browser.
+        <span class="privacy">Video never leaves your machine.</span>
+      </p>
+    </header>
+
+    <div id="stage">
+      <div class="panel" id="cam-panel">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="hud"></div>
+      </div>
+      <div class="panel" id="sim-panel">
+        <canvas id="sim"></canvas>
+      </div>
+      <div id="landing">
+        <div id="landing-card">
+          <h2>Drive a 6-DOF robot arm with your hand</h2>
+          <ul>
+            <li><b>Move your hand</b> — the arm mirrors it in 3D (toward/away = reach)</li>
+            <li><b>Pinch</b> thumb + index — close the gripper, pick up a cube</li>
+            <li><b>Fist</b> — clutch: freeze the arm to reposition your hand</li>
+            <li><b>Tilt your palm</b> — the wrist follows</li>
+          </ul>
+          <button id="start">Enable camera &amp; start</button>
+          <p id="landing-status"></p>
+        </div>
+      </div>
+    </div>
+
+    <div id="controls">
+      <button id="btn-calibrate" title="Re-zero the neutral hand pose (c)">Calibrate</button>
+      <button id="btn-orientation" title="Toggle wrist orientation control (o)">Orientation: on</button>
+      <button id="btn-freeze" title="Freeze the arm (f)">Freeze</button>
+      <button id="btn-reset" title="Reset the scene (x)">Reset scene</button>
+    </div>
+
+    <footer>
+      Companion to the Python + MuJoCo implementation —
+      <a href="https://github.com/advaithdasu/hand-vision-controller">source on GitHub</a>.
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
