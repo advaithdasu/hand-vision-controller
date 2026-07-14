@@ -41,6 +41,20 @@ python -m handarm
 
 On first run, grant camera access to your terminal when macOS asks. Hold your hand up, palm toward the camera — the first detection auto-calibrates the neutral pose.
 
+## Browser demo (no install)
+
+The same pipeline also runs entirely in the browser — no Python, no downloads for the viewer, and the video never leaves your machine (MediaPipe's wasm and hand-landmarker model are vendored under `web/public/` and served same-origin):
+
+```bash
+cd web
+pnpm install
+pnpm dev   # open the printed localhost URL, click Start, allow camera
+```
+
+`web/` is a TypeScript port of the math core (FK, damped-least-squares IK, camera→robot mapping, One Euro filtering, pose features) with Three.js rendering and Rapier physics standing in for MuJoCo. Gestures work the same as below; keyboard shortcuts are `c` (calibrate), `o` (orientation toggle), `f` (freeze), `x` (reset scene). `pnpm test` runs the vitest suite mirroring the Python tests; `pnpm build` type-checks and produces a static bundle.
+
+One deliberate difference from the Python app: the browser mapping is **view-consistent with the mirrored camera preview** — move your hand right and the arm moves screen-right, and wrist roll/yaw follow the same on-screen sense. `web/src/mapping.ts` uses an intentionally improper (det = −1) camera→robot axis map to get this; `handarm/mapping.py` keeps the opposite convention because the MuJoCo viewer sits on the other side of the scene.
+
 ## Controls
 
 | Gesture | Action |
@@ -114,4 +128,11 @@ handarm/
   recorder.py       JSONL trajectory record / replay
 assets/scene.xml    6-DOF arm + gripper + scene (MJCF)
 tests/              full suite, all headless
+web/
+  src/              browser demo: TS port of the math core, Three.js scene,
+                    Rapier physics, MediaPipe hand tracking
+  tests/            vitest suite mirroring tests/
+  public/           vendored MediaPipe wasm + hand-landmarker model
 ```
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md); known gaps and planned work in [TODOS.md](TODOS.md).
