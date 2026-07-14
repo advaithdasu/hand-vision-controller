@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { fk, jacobian } from "../src/kinematics";
 import { solveLinear6 } from "../src/ik";
-import { quatAngleBetween, type Quat, type Vec3 } from "../src/transforms";
+import { quatAngleBetween, type Quat } from "../src/transforms";
 
 /**
  * Reference poses generated from the Python + MuJoCo implementation
@@ -105,5 +105,3 @@ describe("solveLinear6", () => {
     expect(det).not.toBe(0);
   });
 });
-
-export type { Vec3 };
