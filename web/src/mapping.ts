@@ -24,13 +24,22 @@ export const TOOL_DOWN_QUAT: Quat = [0, 1, 0, 0];
 const TOOL_DOWN_MAT = matrixFromQuat(TOOL_DOWN_QUAT);
 
 /**
- * Camera axes -> robot axes (proper rotation, det = +1):
- * camera x (right on the mirrored image) -> robot -y,
- * camera y (down) -> robot -z, camera z (into the scene) -> robot +x.
+ * Camera axes -> robot axes, chosen so the arm matches what the operator
+ * sees: camera x (right on the mirrored image) -> robot +y (screen-right
+ * for the scene camera), camera y (down) -> robot -z, camera z (into the
+ * scene) -> robot +x.
+ *
+ * This map is deliberately improper (orthogonal, det = -1): the preview is
+ * a mirror, so making rotations *look* right requires mirroring their
+ * sense too. Conjugating with it still yields proper rotations (det of
+ * M R Mᵀ is +1), flips roll/yaw the way a mirror does, and leaves pitch
+ * (toward/away tilt) unchanged. This intentionally diverges from
+ * handarm/mapping.py, whose MuJoCo viewer sits on the other side of the
+ * scene.
  */
 export const CAM_TO_ROBOT: Mat3 = [
   [0, 0, 1],
-  [-1, 0, 0],
+  [1, 0, 0],
   [0, -1, 0],
 ];
 
@@ -53,15 +62,19 @@ export class HandToRobotMapper {
 
   /** Capture the current hand pose as the neutral reference. */
   calibrate(handScale: number, palmRot: Mat3): void {
-    this.scaleRef = handScale;
+    // Floor the reference so a degenerate detection (all landmarks
+    // coincident -> scale 0) can't collapse the depth window into a
+    // divide-by-zero that feeds NaN into the IK target.
+    this.scaleRef = Math.max(handScale, 1e-4);
     this.rotRef = palmRot.map((r) => [...r]);
   }
 
   /** (normalized image x, y) + apparent hand size -> robot xyz target. */
   mapPosition(palmXY: [number, number], handScale: number): Vec3 {
-    // Image is mirrored, so image-right = operator-right; the robot moves
-    // the same way in both views.
-    const y = remap(palmXY[0], MAPPING.imgXRange, [WORKSPACE.y[1], WORKSPACE.y[0]]);
+    // Image is mirrored, so image-right = operator-right. The scene camera
+    // puts robot +y on screen-right, so hand-right -> +y keeps the arm
+    // moving the same direction the operator sees their hand move.
+    const y = remap(palmXY[0], MAPPING.imgXRange, [WORKSPACE.y[0], WORKSPACE.y[1]]);
     const z = remap(palmXY[1], MAPPING.imgYRange, [WORKSPACE.z[1], WORKSPACE.z[0]]);
     // Depth window is relative to the calibrated neutral hand size.
     const ref = this.scaleRef ?? MAPPING.defaultHandScale;

@@ -5,17 +5,27 @@ import { CAM_TO_ROBOT, HandToRobotMapper, TOOL_DOWN_QUAT } from "../src/mapping"
 import {
   identity3,
   matMul3,
+  matrixFromQuat,
   matTranspose3,
   quatAngleBetween,
+  quatFromMatrix,
+  rotX,
   rotY,
+  rotZ,
 } from "../src/transforms";
 
 describe("CAM_TO_ROBOT", () => {
-  it("is a proper rotation", () => {
+  it("is orthogonal with det -1 (view-consistent mirror map)", () => {
     const shouldBeI = matMul3(CAM_TO_ROBOT, matTranspose3(CAM_TO_ROBOT));
     const I = identity3();
     for (let i = 0; i < 3; i++)
       for (let j = 0; j < 3; j++) expect(shouldBeI[i][j]).toBeCloseTo(I[i][j], 9);
+    const m = CAM_TO_ROBOT;
+    const det =
+      m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+      m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+      m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    expect(det).toBeCloseTo(-1, 9);
   });
 });
 
@@ -34,12 +44,21 @@ describe("position mapping", () => {
     }
   });
 
-  it("maps directions like the Python implementation", () => {
+  it("maps directions to match the on-screen view", () => {
     const m = new HandToRobotMapper();
     const p0 = m.mapPosition([0.5, 0.5], 0.19);
-    expect(m.mapPosition([0.7, 0.5], 0.19)[1]).toBeLessThan(p0[1]); // right -> -y
+    expect(m.mapPosition([0.7, 0.5], 0.19)[1]).toBeGreaterThan(p0[1]); // right -> +y (screen-right)
     expect(m.mapPosition([0.5, 0.3], 0.19)[2]).toBeGreaterThan(p0[2]); // up -> +z
     expect(m.mapPosition([0.5, 0.5], 0.25)[0]).toBeLessThan(p0[0]); // closer -> retract
+  });
+
+  it("stays finite when calibrated with a degenerate hand scale", () => {
+    const m = new HandToRobotMapper();
+    m.calibrate(0, identity3());
+    const p = m.mapPosition([0.5, 0.5], 0);
+    for (const v of p) expect(Number.isFinite(v)).toBe(true);
+    expect(p[0]).toBeGreaterThanOrEqual(WORKSPACE.x[0]);
+    expect(p[0]).toBeLessThanOrEqual(WORKSPACE.x[1]);
   });
 
   it("recenters the depth window on calibration", () => {
@@ -61,6 +80,20 @@ describe("orientation mapping", () => {
     const R = rotY(0.7);
     m.calibrate(0.2, R);
     expect(quatAngleBetween(m.mapOrientation(R), TOOL_DOWN_QUAT)).toBeLessThan(1e-9);
+  });
+
+  it("mirrors roll sense and preserves pitch, matching the mirrored view", () => {
+    const m = new HandToRobotMapper();
+    m.calibrate(0.2, identity3());
+    const toolDown = matrixFromQuat(TOOL_DOWN_QUAT);
+    // Roll about camera z -> rotation about robot +x with mirrored sense.
+    const roll = m.mapOrientation(rotZ(0.3));
+    const rollExpected = quatFromMatrix(matMul3(rotX(-0.3), toolDown));
+    expect(quatAngleBetween(roll, rollExpected)).toBeLessThan(1e-9);
+    // Pitch (toward/away tilt about camera x) is unchanged by the mirror.
+    const pitch = m.mapOrientation(rotX(0.4));
+    const pitchExpected = quatFromMatrix(matMul3(rotY(-0.4), toolDown));
+    expect(quatAngleBetween(pitch, pitchExpected)).toBeLessThan(1e-9);
   });
 
   it("preserves rotation magnitude and clamps extreme tilt", () => {
