@@ -48,7 +48,7 @@ The same pipeline also runs entirely in the browser — no Python, no downloads 
 ```bash
 cd web
 pnpm install
-pnpm dev   # open the printed localhost URL, click Start, allow camera
+pnpm dev   # open the printed localhost URL, click "Enable camera & start"
 ```
 
 `web/` is a TypeScript port of the math core (FK, damped-least-squares IK, camera→robot mapping, One Euro filtering, pose features) with Three.js rendering and Rapier physics standing in for MuJoCo. Gestures work the same as below; keyboard shortcuts are `c` (calibrate), `o` (orientation toggle), `f` (freeze), `x` (reset scene). `pnpm test` runs the vitest suite mirroring the Python tests; `pnpm build` type-checks and produces a static bundle.
