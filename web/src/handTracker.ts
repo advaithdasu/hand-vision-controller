@@ -37,9 +37,11 @@ export class HandTracker {
       return new HandTracker(
         await HandLandmarker.createFromOptions(fileset, options("GPU")),
       );
-    } catch {
-      // No usable WebGL2 context — fall back to CPU inference (slower but
-      // works everywhere).
+    } catch (err) {
+      // Usually no usable WebGL2 context — fall back to CPU inference
+      // (slower but works everywhere). Surface the original error so a
+      // non-GPU failure (bad model path, network) isn't masked by the retry.
+      console.warn("GPU hand-landmarker init failed, retrying on CPU:", err);
       return new HandTracker(
         await HandLandmarker.createFromOptions(fileset, options("CPU")),
       );

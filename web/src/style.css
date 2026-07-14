@@ -35,9 +35,10 @@ h1 {
 }
 
 .tagline {
-  margin: 0;
+  margin: 0 auto;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 1rem;
+  max-width: 60ch;
 }
 
 .privacy {
@@ -150,6 +151,17 @@ button:hover {
   filter: brightness(1.1);
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+  filter: none;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 #controls {
   display: flex;
   gap: 0.5rem;
@@ -162,10 +174,13 @@ button:hover {
   color: var(--text);
   font-weight: 500;
   font-size: 0.85rem;
+  border: 1px solid transparent;
 }
 
+/* Toggled state via border + tint, keeping outline free for :focus-visible. */
 #controls button.active {
-  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+  background: #2e241a;
 }
 
 #landing-status {

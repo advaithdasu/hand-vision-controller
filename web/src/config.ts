@@ -41,9 +41,10 @@ export const CONTROL = {
   posBeta: 0.015,
   posDCutoff: 1.0,
   oriCutoff: 3.0,
+  pinchCutoff: 8.0,
   maxJointVel: 2.5,
   pinchClose: 0.32,
   pinchOpen: 0.45,
   apertureMargin: 0.25,
-  holdAfterLostFrames: 5,
+  holdAfterLostSec: 0.15,
 };

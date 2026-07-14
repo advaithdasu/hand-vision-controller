@@ -28,11 +28,14 @@ export class OneEuroFilter {
   }
 
   apply(x: number[], dt: number): number[] {
-    if (this.x === null || this.dx === null || dt <= 0) {
+    if (this.x === null || this.dx === null) {
       this.x = [...x];
       this.dx = x.map(() => 0);
       return [...x];
     }
+    // A zero/negative dt (coarsened clocks) must not wipe filter memory;
+    // hold the previous estimate instead of passing raw jitter through.
+    if (dt <= 0) return [...this.x];
     const aD = smoothingFactor(dt, this.dCutoff);
     let speedSq = 0;
     for (let i = 0; i < x.length; i++) {
@@ -61,10 +64,11 @@ export class QuaternionLowPass {
 
   apply(q: Quat, dt: number): Quat {
     q = quatNormalize(q);
-    if (this.q === null || dt <= 0) {
+    if (this.q === null) {
       this.q = [...q];
       return [...q];
     }
+    if (dt <= 0) return [...this.q];
     this.q = quatSlerp(this.q, q, smoothingFactor(dt, this.cutoff));
     return [...this.q];
   }
@@ -81,10 +85,11 @@ export class ScalarLowPass {
   }
 
   apply(y: number, dt: number): number {
-    if (this.y === null || dt <= 0) {
+    if (this.y === null) {
       this.y = y;
       return y;
     }
+    if (dt <= 0) return this.y;
     const a = smoothingFactor(dt, this.cutoff);
     this.y = a * y + (1 - a) * this.y;
     return this.y;

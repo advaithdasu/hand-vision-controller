@@ -21,7 +21,7 @@ export class TeleopController {
   private posFilter = new OneEuroFilter(
     CONTROL.posMinCutoff, CONTROL.posBeta, CONTROL.posDCutoff);
   private oriFilter = new QuaternionLowPass(CONTROL.oriCutoff);
-  private pinchFilter = new ScalarLowPass(8.0);
+  private pinchFilter = new ScalarLowPass(CONTROL.pinchCutoff);
 
   qCmd = [...HOME_Q];
   targetPos: Vec3;
@@ -33,7 +33,7 @@ export class TeleopController {
   manualFreeze = false;
   orientationOn = true;
   calibrated = false;
-  lostFrames = 999;
+  lostTime = 999; // seconds since the hand was last seen
   lastIK: IKResult | null = null;
   frameAspect = 16 / 9;
 
@@ -141,13 +141,16 @@ export class TeleopController {
   /** One control tick, as the render loop calls it. */
   tick(obs: HandObservation | null, dt: number): void {
     if (obs) {
-      this.lostFrames = 0;
+      this.lostTime = 0;
       this.processHand(obs, dt);
     } else {
-      this.lostFrames++;
+      // Wall-clock, not ticks: the loop runs at display refresh rate, so a
+      // frame count would make the hold threshold monitor-dependent.
+      this.lostTime += dt;
     }
-    const hold = this.lostFrames >= CONTROL.holdAfterLostFrames;
-    if (!(hold && obs === null)) this.solveAndCommand(dt);
+    // hold implies a lost hand: lostTime resets to 0 whenever obs exists.
+    const hold = this.lostTime >= CONTROL.holdAfterLostSec;
+    if (!hold) this.solveAndCommand(dt);
     this.scene.step(dt);
   }
 }

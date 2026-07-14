@@ -16,7 +16,9 @@ import * as THREE from "three";
 
 import { CHAIN, fk } from "./kinematics";
 import {
+  matTranspose3,
   type Quat,
+  quatConjugate,
   quatMultiply,
   type Vec3,
   vecAdd,
@@ -24,6 +26,7 @@ import {
   vecSub,
   matVec3,
 } from "./transforms";
+import { type FKResult } from "./kinematics";
 
 const COLORS = {
   dark: 0x33383f,
@@ -38,6 +41,12 @@ const COLORS = {
 
 const CUBE_HALF = 0.02;
 const GRASP_RADIUS = 0.055; // tcp-to-cube-center distance for a valid grasp
+const GRASP_CLOSED_APERTURE = 0.25; // grip opening below which a grasp engages
+const CUBE_STARTS: Vec3[] = [
+  [0.42, -0.12, CUBE_HALF],
+  [0.5, 0.06, CUBE_HALF],
+];
+const CUBE_COLORS = [COLORS.orange, COLORS.blue];
 
 interface Cube {
   body: RAPIER.RigidBody;
@@ -100,21 +109,27 @@ export class ArmScene {
   // ---------------- scene construction ----------------
 
   private buildFloor(): void {
-    const tiles = new THREE.Group();
+    // One instanced mesh per checker color: 2 draw calls instead of 256.
     const n = 8, size = 0.5;
+    const geom = new THREE.PlaneGeometry(size, size);
+    const mats = [COLORS.floor1, COLORS.floor2].map(
+      (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.9 }),
+    );
+    const tiles = mats.map((mat) => {
+      const inst = new THREE.InstancedMesh(geom, mat, 2 * n * n);
+      inst.receiveShadow = true;
+      return inst;
+    });
+    const counts = [0, 0];
+    const m = new THREE.Matrix4();
     for (let i = -n; i < n; i++) {
       for (let j = -n; j < n; j++) {
-        const mat = new THREE.MeshStandardMaterial({
-          color: (i + j) % 2 ? COLORS.floor1 : COLORS.floor2,
-          roughness: 0.9,
-        });
-        const tile = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
-        tile.position.set((i + 0.5) * size, (j + 0.5) * size, 0);
-        tile.receiveShadow = true;
-        tiles.add(tile);
+        const which = (i + j) % 2 ? 0 : 1;
+        m.setPosition((i + 0.5) * size, (j + 0.5) * size, 0);
+        tiles[which].setMatrixAt(counts[which]++, m);
       }
     }
-    this.scene.add(tiles);
+    this.scene.add(...tiles);
     this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(4, 4, 0.1).setTranslation(0, 0, -0.1).setFriction(1.0),
     );
@@ -222,8 +237,7 @@ export class ArmScene {
       );
     }
 
-    this.spawnCube([0.42, -0.12, CUBE_HALF], COLORS.orange);
-    this.spawnCube([0.5, 0.06, CUBE_HALF], COLORS.blue);
+    CUBE_STARTS.forEach((pos, i) => this.spawnCube(pos, CUBE_COLORS[i]));
   }
 
   private spawnCube(pos: Vec3, color: number): void {
@@ -257,15 +271,14 @@ export class ArmScene {
   }
 
   reset(): void {
-    const starts: Vec3[] = [
-      [0.42, -0.12, CUBE_HALF],
-      [0.5, 0.06, CUBE_HALF],
-    ];
+    // Reopen the gripper, or a closed grip re-grasps a freshly reset cube
+    // that spawns within GRASP_RADIUS on the next step.
+    this.grip = 1;
     this.cubes.forEach((cube, i) => {
       cube.held = false;
       cube.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
       cube.body.setTranslation(
-        { x: starts[i][0], y: starts[i][1], z: starts[i][2] },
+        { x: CUBE_STARTS[i][0], y: CUBE_STARTS[i][1], z: CUBE_STARTS[i][2] },
         true,
       );
       cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -293,7 +306,8 @@ export class ArmScene {
     this.fingerL.position.set(0, 0.008 + slide + 0.006, 0.08);
     this.fingerR.position.set(0, -0.008 - slide - 0.006, 0.08);
 
-    this.updateGrasp();
+    const f = fk(this.q);
+    this.updateGrasp(f);
 
     // Physics at a fixed 120 Hz, capped catch-up (same policy as ArmSim).
     this.accumulator = Math.min(this.accumulator + wallDt, 0.1);
@@ -305,7 +319,6 @@ export class ArmScene {
     }
 
     // Sync dynamic cube meshes; held cubes follow the tool frame.
-    const f = fk(this.q);
     for (const cube of this.cubes) {
       if (cube.held && cube.holdOffset) {
         const worldPos = vecAdd(f.pos, matVec3(f.rot, cube.holdOffset.pos));
@@ -327,22 +340,18 @@ export class ArmScene {
     }
   }
 
-  private updateGrasp(): void {
-    const closed = this.grip < 0.25;
-    const f = fk(this.q);
+  private updateGrasp(f: FKResult): void {
+    const closed = this.grip < GRASP_CLOSED_APERTURE;
     if (closed && !this.holding) {
       for (const cube of this.cubes) {
         const t = cube.body.translation();
-        const d = vecNorm(vecSub([t.x, t.y, t.z], f.pos));
-        if (d < GRASP_RADIUS) {
+        const rel = vecSub([t.x, t.y, t.z], f.pos);
+        if (vecNorm(rel) < GRASP_RADIUS) {
           cube.held = true;
           // Store the cube pose in the tool frame.
-          const rel = vecSub([t.x, t.y, t.z], f.pos);
-          const rotT = f.rot[0].map((_, c) => f.rot.map((row) => row[c])); // transpose
-          const localPos = matVec3(rotT, rel) as Vec3;
+          const localPos = matVec3(matTranspose3(f.rot), rel) as Vec3;
           const r = cube.body.rotation();
-          const qInv: Quat = [-f.quat[0], -f.quat[1], -f.quat[2], f.quat[3]];
-          const localQuat = quatMultiply(qInv, [r.x, r.y, r.z, r.w]);
+          const localQuat = quatMultiply(quatConjugate(f.quat), [r.x, r.y, r.z, r.w]);
           cube.holdOffset = { pos: localPos, quat: localQuat };
           cube.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
           break;
@@ -354,6 +363,7 @@ export class ArmScene {
           cube.held = false;
           cube.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
           cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
         }
       }
     }
