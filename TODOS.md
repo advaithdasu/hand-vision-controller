@@ -2,49 +2,25 @@
 
 ## Web Demo
 
-### Rebase the clutch instead of using absolute mapping
+### Record the demo video
 
-**What:** Make the fist-clutch actually reposition: capture a position offset on clutch release so the arm resumes from where it froze instead of snapping to the hand's new absolute position.
+**What:** Screen-capture the browser demo (split view: hand + arm) picking up a cube and dropping it in the tray, and embed it at the top of the README in place of the placeholder.
 
-**Why:** The landing copy advertises "Fist — clutch: freeze the arm to reposition your hand", but `mapPosition` is absolute, so on release the arm swings back to wherever the hand now maps — repositioning achieves nothing and the transit is a fast un-commanded move.
-
-**Context:** Found by the pre-ship adversarial review (v0.1.0.0). Either add an offset rebase in `web/src/mapping.ts` (and mirror it in `handarm/mapping.py`, which has the same semantics), or change the copy/UX intent. The position filter is also not reset on clutch release (`web/src/app.ts`), which softens but does not remove the lurch.
-
-**Effort:** M
-**Priority:** P1
-
-### Distinguish a thumb-tucked fist from a pinch
-
-**What:** Make `isFistFrom` recognize a fist with the thumb wrapped over the fingers, which currently reads as a pinch (small thumb–index distance) and closes the gripper instead of clutching.
-
-**Why:** The user's "freeze" gesture can silently command a grip close — worst case it grabs or drops a cube.
-
-**Context:** `web/src/poseFeatures.ts` (`isFistFrom` requires `pinch > 0.5`); inherited from `handarm/pose_features.py`. Needs gesture-design judgment: e.g. gate the fist check on finger extensions only, or use thumb-tip-to-palm distance rather than thumb–index.
-
-**Effort:** M
-**Priority:** P2
-
-### Lazy-load the engine bundle
-
-**What:** Dynamic-import Three.js/Rapier/MediaPipe in `start()` so the landing shell is a small entry chunk.
-
-**Why:** The single 2.9 MB (1 MB gzip) bundle downloads, parses, and compiles before the landing page is interactive, even though none of it runs until the user clicks start.
-
-**Context:** `web/src/main.ts` statically imports `armScene`/`handTracker`; `vite.config.ts` raises `chunkSizeWarningLimit` to accommodate. `enginePromise` already isolates engine creation, so the import can move inside it.
+**Why:** The README and the brief both call the video the centerpiece; a portfolio visitor who won't grant camera access needs to see the demo work.
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P1
 
-### Calibration quality gate
+### Gripper finger colliders
 
-**What:** Calibrate synchronously from the last observation when the button is pressed, and gate auto/first-frame calibration on a few stable tracked frames.
+**What:** Give the two fingers and the palm kinematic Rapier colliders so the arm can nudge cubes it isn't holding, with collision groups excluding the currently held cube.
 
-**Why:** Auto-calibration fires on the very first detection (often while the hand is entering the frame edge), yielding a bad neutral pose; pressing Calibrate while clutched/frozen silently defers to an arbitrary later frame.
+**Why:** Today the arm passes through unheld cubes; bumping them around would make the scene feel physical.
 
-**Context:** `web/src/main.ts` (`recalibrate`), `web/src/app.ts` (`processHand` calls `calibrate` only when not frozen). Python `handarm/app.py` calibrates immediately from the current observation.
+**Context:** `web/src/armScene.ts`. Deliberately deferred: kinematic fingers pressing a resting cube into the floor produce ugly sink/pop artifacts unless the contact is tuned, and that needs a live WebGL session to iterate on.
 
 **Effort:** M
-**Priority:** P2
+**Priority:** P3
 
 ### Reuse scratch buffers in the IK hot loop
 
@@ -52,51 +28,37 @@
 
 **Why:** Each 60 Hz frame allocates thousands of short-lived arrays (fk results, 6×6 products, augmented matrices), inviting periodic GC jank in a real-time loop.
 
-**Context:** `web/src/ik.ts` (`descend`, `matMulT`, `solveLinear6`), `web/src/kinematics.ts` (`fk`). Also trim the 21-landmark map in `app.ts handScaleCorrected` (only 2 landmarks are read).
+**Context:** `web/src/ik.ts` (`descend`, `matMulT`, `solveLinear6`), `web/src/kinematics.ts` (`fk`).
 
 **Effort:** M
-**Priority:** P3
-
-### Held-cube kinematic target ordering and tunneling
-
-**What:** Set the held cube's kinematic target from the current FK before stepping the physics world (interpolated per fixed substep), and consider clamping the held pose above the floor.
-
-**Why:** The body lags the rendered pose by one frame, catch-up frames absorb the whole jump in one substep, and a kinematically held cube can be driven through tray walls, ejecting the other cube.
-
-**Context:** `web/src/armScene.ts` `step()`/`updateGrasp()`. The file header documents kinematic grasping as a deliberate browser-demo tradeoff; this is about softening its visible artifacts.
-
-**Effort:** M
-**Priority:** P3
-
-### Harden frame delivery and rendering paths
-
-**What:** Use `requestVideoFrameCallback` (fallback to the current `currentTime` compare) for new-frame detection, and handle `webglcontextlost` on both canvases.
-
-**Why:** `currentTime` is quantized on some browsers (missed/duplicate detections), and a lost WebGL context currently surfaces only via the generic loop crash handler.
-
-**Context:** `web/src/main.ts` loop; `web/src/armScene.ts` renderer.
-
-**Effort:** S
-**Priority:** P3
-
-### Add a Content-Security-Policy
-
-**What:** Serve/meta a CSP (`script-src 'self'; connect-src 'self'` plus `wasm-unsafe-eval` as needed) and build the HUD from `textContent` spans instead of `innerHTML`.
-
-**Why:** Enforces the "video never leaves your machine" privacy claim at the platform level and removes the fragile innerHTML pattern before any externally influenced string ever reaches the HUD.
-
-**Context:** `web/index.html`, `web/src/main.ts updateHud`. All assets are already same-origin (vendored MediaPipe wasm/models under `web/public/`).
-
-**Effort:** S
 **Priority:** P3
 
 ### Single source of truth for the accent color
 
-**What:** Derive the `#f27317` accent used in `style.css`, `armScene.ts` (`COLORS.orange`), and `main.ts` (skeleton dots) from one definition.
+**What:** Derive the `#f27317` accent used in `style.css`, `armScene.ts` (`COLORS.orange`), and `main.ts` (`ACCENT`) from one definition.
 
 **Why:** A rebrand currently requires three synchronized edits in two formats.
 
 **Effort:** S
 **Priority:** P4
 
+## Python App
+
+### Replay recordings in the browser
+
+**What:** Accept a `recordings/*.jsonl` file (drag-and-drop) in the browser demo and play the joint trajectory back on the Three.js arm.
+
+**Why:** Lets the portfolio page show a canned manipulation for visitors without a webcam.
+
+**Effort:** M
+**Priority:** P3
+
 ## Completed
+
+- **Rebase the clutch instead of using absolute mapping** (v0.2.0.0): position and orientation maps are re-anchored on fist release, manual unfreeze, and orientation re-enable.
+- **Distinguish a thumb-tucked fist from a pinch** (v0.2.0.0): fist detection ignores the thumb; the clutch and gripper are debounced.
+- **Calibration quality gate** (v0.2.0.0): hold-still auto-calibration with HUD progress; the Calibrate button acts immediately.
+- **Lazy-load the engine bundle** (v0.2.0.0): 8 kB entry chunk, engine chunk loaded on start.
+- **Held-cube kinematic target ordering and tunneling** (v0.2.0.0): held cubes are dynamic and velocity-servoed per substep with interpolated targets.
+- **Harden frame delivery and rendering paths** (v0.2.0.0): `requestVideoFrameCallback`, `webglcontextlost` handling with engine rebuild.
+- **Add a Content-Security-Policy** (v0.2.0.0): same-origin CSP in `index.html`; HUD built from text nodes.
