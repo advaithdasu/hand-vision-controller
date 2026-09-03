@@ -102,6 +102,10 @@ h1 {
   color: var(--ok);
 }
 
+#hud .muted {
+  color: var(--muted);
+}
+
 #landing {
   position: absolute;
   inset: 0;

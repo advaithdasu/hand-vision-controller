@@ -3,6 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Everything is same-origin (MediaPipe wasm + model are vendored under
+      public/), so the policy can pin it: no third-party scripts, no
+      network destinations, which is what "video never leaves your
+      machine" means at the platform level. wasm-unsafe-eval is needed to
+      instantiate the MediaPipe and Rapier wasm modules; the ws: entries
+      are for Vite's dev-server HMR socket only.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; worker-src 'self' blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://localhost:*; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
+    <meta
+      name="description"
+      content="Drive a simulated 6-DOF robot arm with your hand: webcam hand tracking, damped-least-squares inverse kinematics, and physics, running entirely in your browser."
+    />
     <title>Hand-Controlled Robot Arm</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦾</text></svg>" />
     <link rel="stylesheet" href="/src/style.css" />
@@ -30,10 +46,11 @@
         <div id="landing-card">
           <h2>Drive a 6-DOF robot arm with your hand</h2>
           <ul>
-            <li><b>Move your hand</b> — the arm follows it in 3D (toward/away = reach)</li>
-            <li><b>Pinch</b> thumb + index — close the gripper, pick up a cube</li>
-            <li><b>Fist</b> — clutch: freeze the arm to reposition your hand</li>
+            <li><b>Hold your open hand still</b> for half a second to lock on — that pose becomes neutral</li>
+            <li><b>Move your hand</b> — the arm follows in 3D (toward/away = reach)</li>
+            <li><b>Pinch</b> thumb + index over a glowing cube — close the gripper, pick it up</li>
             <li><b>Tilt your palm</b> — the wrist follows</li>
+            <li><b>Fist</b> — clutch: the arm freezes, move your hand somewhere comfortable, open it to resume from where the arm stopped</li>
           </ul>
           <button id="start">Enable camera &amp; start</button>
           <p id="landing-status"></p>
@@ -42,7 +59,7 @@
     </div>
 
     <div id="controls">
-      <button id="btn-calibrate" title="Re-zero the neutral hand pose (c)" disabled>Calibrate</button>
+      <button id="btn-calibrate" title="Take the current hand pose as neutral (c)" disabled>Calibrate</button>
       <button id="btn-orientation" title="Toggle wrist orientation control (o)" disabled>Orientation: on</button>
       <button id="btn-freeze" title="Freeze the arm (f)" disabled>Freeze</button>
       <button id="btn-reset" title="Reset the scene (x)" disabled>Reset scene</button>

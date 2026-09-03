@@ -1,8 +1,8 @@
 /** Bootstrap and render loop: camera -> tracker -> controller -> scene. */
 
 import { TeleopController } from "./app";
-import { ArmScene } from "./armScene";
-import { HandTracker, type HandObservation } from "./handTracker";
+import type { ArmScene } from "./armScene";
+import type { HandObservation, HandTracker } from "./handTracker";
 import { HAND_CONNECTIONS, type Landmarks } from "./poseFeatures";
 
 const video = document.getElementById("video") as HTMLVideoElement;
@@ -33,12 +33,38 @@ const detectMs = new RollingMean();
 const tickMs = new RollingMean();
 const frameMs = new RollingMean();
 
+type Engine = { scene: ArmScene; tracker: HandTracker };
+
 /**
- * Heavy engine modules are created once and reused across start() retries:
- * a second ArmScene would attach a second WebGLRenderer to the same canvas
- * and leak the Rapier world; a second HandLandmarker leaks its predecessor.
+ * Heavy engine modules are loaded on demand (the landing shell stays a
+ * small entry chunk) and created once, then reused across start()
+ * retries: a second ArmScene would attach a second WebGLRenderer to the
+ * same canvas and leak the Rapier world; a second HandLandmarker leaks
+ * its predecessor.
  */
-let enginePromise: Promise<[ArmScene, HandTracker]> | null = null;
+let enginePromise: Promise<Engine> | null = null;
+
+async function loadEngine(): Promise<Engine> {
+  const [{ ArmScene }, { HandTracker }] = await Promise.all([
+    import("./armScene"),
+    import("./handTracker"),
+  ]);
+  const [scene, tracker] = await Promise.all([
+    ArmScene.create(simCanvas),
+    HandTracker.create(),
+  ]);
+  return { scene, tracker };
+}
+
+/** Tear the engine down so the next start() builds a fresh one. */
+function discardEngine(): void {
+  const p = enginePromise;
+  enginePromise = null;
+  p?.then((e) => {
+    e.scene.dispose();
+    e.tracker.close();
+  }).catch(() => {});
+}
 
 /** The running session, if any — event handlers wired once refer to this. */
 let active: { ctl: TeleopController; scene: ArmScene } | null = null;
@@ -70,7 +96,11 @@ function sizeOverlay(panelW: number, panelH: number): void {
   if (overlay.height !== h) overlay.height = h;
 }
 
-function drawSkeleton(lm: Landmarks): void {
+const ACCENT = "#f27317";
+const SKELETON = "rgba(80, 200, 255, 0.9)";
+const SKELETON_FROZEN = "rgba(255, 92, 92, 0.9)";
+
+function drawSkeleton(lm: Landmarks, frozen: boolean): void {
   const ctx = overlay.getContext("2d")!;
   const { width: w, height: h } = overlay;
   ctx.clearRect(0, 0, w, h);
@@ -90,14 +120,14 @@ function drawSkeleton(lm: Landmarks): void {
     p[1] * dispH - offY,
   ];
   ctx.lineWidth = 2.5 * dpr();
-  ctx.strokeStyle = "rgba(80, 200, 255, 0.9)";
+  ctx.strokeStyle = frozen ? SKELETON_FROZEN : SKELETON;
   for (const [a, b] of HAND_CONNECTIONS) {
     ctx.beginPath();
     ctx.moveTo(...px(lm[a]));
     ctx.lineTo(...px(lm[b]));
     ctx.stroke();
   }
-  ctx.fillStyle = "#f27317";
+  ctx.fillStyle = ACCENT;
   for (const p of lm) {
     ctx.beginPath();
     ctx.arc(...px(p), 4 * dpr(), 0, Math.PI * 2);
@@ -105,44 +135,81 @@ function drawSkeleton(lm: Landmarks): void {
   }
 }
 
-let lastHudHtml = "";
+/** One HUD line is a list of text runs, optionally styled. */
+type Run = { t: string; c?: "warn" | "good" | "muted" };
+
+let lastHudKey = "";
+
+/**
+ * Render the HUD from text runs (no innerHTML: nothing here is markup,
+ * and this keeps the page CSP-clean). Skipped when nothing changed.
+ */
+function renderHud(lines: Run[][]): void {
+  const key = JSON.stringify(lines);
+  if (key === lastHudKey) return;
+  lastHudKey = key;
+  const frag = document.createDocumentFragment();
+  lines.forEach((runs, i) => {
+    if (i > 0) frag.append("\n");
+    for (const r of runs) {
+      if (!r.c) {
+        frag.append(r.t);
+        continue;
+      }
+      const span = document.createElement("span");
+      span.className = r.c;
+      span.textContent = r.t;
+      frag.append(span);
+    }
+  });
+  hud.replaceChildren(frag);
+}
+
+function progressBar(frac: number, width = 10): string {
+  const filled = Math.round(Math.min(Math.max(frac, 0), 1) * width);
+  return "▮".repeat(filled) + "▯".repeat(width - filled);
+}
 
 function updateHud(ctl: TeleopController, scene: ArmScene, handVisible: boolean): void {
   const ik = ctl.lastIK;
   const fps = frameMs.mean() > 0 ? 1000 / frameMs.mean() : 0;
-  const mode = ctl.manualFreeze
-    ? '<span class="warn">FROZEN (button)</span>'
+  const mode: Run = ctl.manualFreeze
+    ? { t: "FROZEN (button)", c: "warn" }
     : ctl.clutched
-      ? '<span class="warn">CLUTCHED (fist)</span>'
-      : ctl.orientationOn
-        ? "pos + orientation"
-        : "position only";
-  const grip = ctl.gripLatched
-    ? '<span class="warn">LATCHED</span>'
+      ? { t: "CLUTCHED (fist) — open your hand to resume", c: "warn" }
+      : { t: ctl.orientationOn ? "pos + orientation" : "position only" };
+  const grip: Run = ctl.gripLatched
+    ? { t: "LATCHED", c: "warn" }
     : ctl.gripping
-      ? '<span class="warn">CLOSED</span>'
-      : "open";
-  const lines = [
-    `fps ${fps.toFixed(0).padStart(3)}   detect ${detectMs.mean().toFixed(1)} ms   tick ${tickMs.mean().toFixed(2)} ms`,
-    `mode: ${mode}`,
-    `hand: ${handVisible ? '<span class="good">tracking</span>' : '<span class="warn">NOT FOUND</span>'}`,
-    `grip: ${grip}  aperture ${ctl.gripOpening.toFixed(2)}${scene.holding ? '  <span class="good">● holding cube</span>' : ""}`,
+      ? { t: "CLOSED", c: "warn" }
+      : { t: "open" };
+  const lines: Run[][] = [
+    [{ t: `fps ${fps.toFixed(0).padStart(3)}   detect ${detectMs.mean().toFixed(1)} ms   tick ${tickMs.mean().toFixed(2)} ms` }],
+    [{ t: "mode: " }, mode],
+    [{ t: "hand: " }, handVisible ? { t: "tracking", c: "good" } : { t: "NOT FOUND", c: "warn" }],
+    [
+      { t: "grip: " }, grip, { t: `  aperture ${ctl.gripOpening.toFixed(2)}` },
+      ...(scene.holding ? [{ t: "  ● holding cube", c: "good" as const }] : []),
+    ],
   ];
   if (ik) {
-    const conv = ik.converged ? "" : ' <span class="warn">(!)</span>';
-    lines.push(
-      `ik: ${ik.iters} it  ${(ik.posErr * 1000).toFixed(1)} mm / ${((ik.oriErr * 180) / Math.PI).toFixed(1)} deg  w ${ik.manipulability.toFixed(3)}${conv}`,
-    );
+    lines.push([
+      { t: `ik: ${ik.iters} it  ${(ik.posErr * 1000).toFixed(1)} mm / ${((ik.oriErr * 180) / Math.PI).toFixed(1)} deg  w ${ik.manipulability.toFixed(3)}` },
+      ...(ik.converged ? [] : [{ t: " (!)", c: "warn" as const }]),
+    ]);
   }
   if (!ctl.calibrated) {
-    lines.push('<span class="warn">show your hand to calibrate</span>');
+    lines.push([
+      handVisible
+        ? { t: `hold still to lock on  ${progressBar(ctl.calibProgress)}`, c: "warn" }
+        : { t: "show your open hand to the camera", c: "warn" },
+    ]);
+  } else if (scene.holding) {
+    lines.push([{ t: "open your hand to release", c: "muted" }]);
+  } else if (scene.canGrasp) {
+    lines.push([{ t: "cube in reach — pinch to grab", c: "good" }]);
   }
-  const html = lines.join("\n");
-  // Skip the write (and the DOM teardown/re-parse it causes) when unchanged.
-  if (html !== lastHudHtml) {
-    lastHudHtml = html;
-    hud.innerHTML = html;
-  }
+  renderHud(lines);
 }
 
 /** Treat the hand as lost if the camera stops delivering frames this long. */
@@ -153,8 +220,8 @@ async function start(): Promise<void> {
   let stream: MediaStream | null = null;
   try {
     landingStatus.textContent = "Loading physics + hand tracking models…";
-    enginePromise ??= Promise.all([ArmScene.create(simCanvas), HandTracker.create()]);
-    const [scene, tracker] = await enginePromise.catch((e) => {
+    enginePromise ??= loadEngine();
+    const { scene, tracker } = await enginePromise.catch((e) => {
       enginePromise = null; // engine init failed — allow a clean retry
       throw e;
     });
@@ -188,9 +255,20 @@ async function start(): Promise<void> {
     for (const b of controlButtons) b.disabled = false; // session is live
 
     let lastObs: HandObservation | null = null;
-    let lastVideoTime = -1;
     let lastFrameAt = performance.now();
     let tPrev = performance.now();
+
+    // New-frame detection: requestVideoFrameCallback fires exactly once
+    // per delivered camera frame where supported; elsewhere fall back to
+    // watching currentTime, which some browsers quantize coarsely.
+    let newFrame = false;
+    let lastVideoTime = -1;
+    const hasRvfc = typeof video.requestVideoFrameCallback === "function";
+    const onVideoFrame = (): void => {
+      newFrame = true;
+      if (active?.ctl === ctl) video.requestVideoFrameCallback(onVideoFrame);
+    };
+    if (hasRvfc) video.requestVideoFrameCallback(onVideoFrame);
 
     const loop = (): void => {
       // Any uncaught throw here (GPU context loss, wasm fault) would
@@ -207,9 +285,13 @@ async function start(): Promise<void> {
           return;
         }
 
-        // Detect only on new video frames; reuse the last observation between.
-        if (video.currentTime !== lastVideoTime && video.readyState >= 2) {
+        if (!hasRvfc && video.currentTime !== lastVideoTime) {
           lastVideoTime = video.currentTime;
+          newFrame = true;
+        }
+        // Detect only on new video frames; reuse the last observation between.
+        if (newFrame && video.readyState >= 2) {
+          newFrame = false;
           lastFrameAt = now;
           const t0 = performance.now();
           lastObs = tracker.detect(video, now);
@@ -226,7 +308,7 @@ async function start(): Promise<void> {
 
         const camPanel = video.parentElement!;
         sizeOverlay(camPanel.clientWidth, camPanel.clientHeight);
-        if (lastObs) drawSkeleton(lastObs.imageLandmarks);
+        if (lastObs) drawSkeleton(lastObs.imageLandmarks, ctl.frozen);
         else overlay.getContext("2d")!.clearRect(0, 0, overlay.width, overlay.height);
 
         const simPanel = simCanvas.parentElement!;
@@ -236,6 +318,9 @@ async function start(): Promise<void> {
         requestAnimationFrame(loop);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        // A lost GPU context never comes back for this renderer; rebuild
+        // the engine on the next start instead of reusing a dead one.
+        if (/context lost/i.test(msg)) discardEngine();
         stopToLanding(stream, `The session crashed (${msg}). Start again to retry.`);
       }
     };
@@ -248,9 +333,11 @@ async function start(): Promise<void> {
       stream,
       err instanceof DOMException && err.name === "NotAllowedError"
         ? "Camera access was denied — enable it in your browser's site settings and try again."
-        : /WebGL/i.test(msg)
-          ? "This browser has no WebGL support (required for the 3D simulation). Try Chrome, Edge, or Safari with hardware acceleration enabled."
-          : `Failed to start: ${msg}`,
+        : err instanceof DOMException && err.name === "NotFoundError"
+          ? "No camera found. Plug one in (or allow camera access) and try again."
+          : /WebGL/i.test(msg)
+            ? "This browser has no WebGL support (required for the 3D simulation). Try Chrome, Edge, or Safari with hardware acceleration enabled."
+            : `Failed to start: ${msg}`,
     );
   }
 }
@@ -288,7 +375,7 @@ function wireControls(): void {
     btnFreeze.classList.remove("active");
   };
   const recalibrate = (): void => {
-    if (active) active.ctl.calibrated = false; // re-zero on the next tracked frame
+    active?.ctl.requestCalibration();
   };
 
   btnCal.addEventListener("click", recalibrate);
