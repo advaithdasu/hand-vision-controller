@@ -41,6 +41,21 @@ def test_quaternion_lowpass_converges():
     assert quat_angle_between(q, b) < 0.01
 
 
+def test_quaternion_one_euro_opens_cutoff_with_speed():
+    """A steady sweep: the adaptive filter trails the input by less than
+    the fixed-cutoff one."""
+    fixed = QuaternionLowPass(cutoff=2.0, beta=0.0)
+    adaptive = QuaternionLowPass(cutoff=2.0, beta=1.0)
+    dt = 1 / 30
+    for i in range(90):
+        t = i * dt
+        q = np.array([0, 0, np.sin(t), np.cos(t)])  # 2 rad/s about z
+        lag_fixed = quat_angle_between(fixed(q, dt), q)
+        lag_adaptive = quat_angle_between(adaptive(q, dt), q)
+    assert lag_adaptive < 0.7 * lag_fixed
+    assert lag_adaptive < 0.1
+
+
 def test_quaternion_lowpass_smooths():
     """One step toward a new target must move only part of the way."""
     f = QuaternionLowPass(cutoff=3.0)

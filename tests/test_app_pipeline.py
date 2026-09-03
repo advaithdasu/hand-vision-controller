@@ -9,8 +9,17 @@ import pytest
 
 from handarm.app import TeleopApp
 from handarm.config import AppConfig
+from handarm.transforms import quat_angle_between
 
-from .test_pose_features import synthetic_fist, synthetic_open_hand, synthetic_pinch
+from .test_pose_features import (
+    rot_x,
+    synthetic_fist,
+    synthetic_open_hand,
+    synthetic_pinch,
+    synthetic_tucked_fist,
+)
+
+ASPECT = AppConfig().camera_width / AppConfig().camera_height
 
 
 class FakeObs:
@@ -22,11 +31,15 @@ class FakeObs:
         self.handedness = "Right"
 
 
-def obs_at(image_xy, scale=0.18):
-    """An open hand whose palm center sits at image_xy (normalized)."""
-    world = synthetic_open_hand()
-    img = world / (np.linalg.norm(world[9]) + 1e-9) * scale  # middle MCP dist = scale
-    img[:, :2] += np.asarray(image_xy) - img[[0, 5, 9, 13, 17], :2].mean(axis=0)
+def obs_at(image_xy, k=2.0, world=None):
+    """A hand of the given shape whose palm center sits at image_xy
+    (normalized), projected orthographically with scale k (∝ 1/depth).
+    World landmarks are the metric shape itself, as MediaPipe reports."""
+    world = synthetic_open_hand() if world is None else world
+    palm = world[[0, 5, 9, 13, 17], :2].mean(axis=0)
+    img = world.copy()
+    img[:, 0] = image_xy[0] + (world[:, 0] - palm[0]) * k / ASPECT
+    img[:, 1] = image_xy[1] + (world[:, 1] - palm[1]) * k
     return FakeObs(img, world)
 
 
@@ -39,14 +52,19 @@ DT = 1 / 30
 
 
 def drive(app, obs, seconds):
-    for _ in range(int(seconds / DT)):
-        app.process_hand(obs, DT)
-        app.solve_and_command(DT)
+    for _ in range(int(round(seconds / DT))):
+        app.tick(obs, DT)
         app.sim.step(DT)
 
 
+def settle(app):
+    """Hold an open hand still at the image center until calibration locks on."""
+    drive(app, obs_at([0.5, 0.5]), 0.8)
+    assert app.calibrated
+
+
 def test_hand_position_moves_arm(app):
-    drive(app, obs_at([0.5, 0.5]), 0.2)  # calibrate at center
+    settle(app)
     p_center = app.target_pos.copy()
 
     drive(app, obs_at([0.2, 0.5]), 1.0)  # move hand left in mirrored image
@@ -58,102 +76,195 @@ def test_hand_position_moves_arm(app):
 
 
 def test_hand_height_maps_to_z(app):
-    drive(app, obs_at([0.5, 0.5]), 0.2)
+    settle(app)
     z0 = app.target_pos[2]
     drive(app, obs_at([0.5, 0.25]), 1.0)  # raise hand
     assert app.target_pos[2] > z0 + 0.05
 
 
+def test_hand_depth_maps_to_x(app):
+    settle(app)
+    x0 = app.target_pos[0]
+    drive(app, obs_at([0.5, 0.5], k=2.6), 1.0)  # hand closer -> bigger
+    assert app.target_pos[0] < x0 - 0.05  # arm retracts
+
+
+def test_palm_tilt_does_not_change_depth(app):
+    """Regression: the wrist-to-knuckle image length used as the depth
+    proxy shrank with palm pitch, so tilting the wrist extended the arm."""
+    settle(app)
+    drive(app, obs_at([0.5, 0.5]), 0.5)
+    x_flat = app.target_pos[0]
+    pitched = synthetic_open_hand() @ rot_x(0.7).T
+    drive(app, obs_at([0.5, 0.5], world=pitched), 1.0)
+    assert abs(app.target_pos[0] - x_flat) < 0.01
+    # The wrist did follow the tilt.
+    _, quat = app.kin.fk(app.q_cmd)
+    assert quat_angle_between(app.target_quat, quat) < 0.2
+
+
 def test_pinch_closes_gripper(app):
-    open_obs = FakeObs(obs_at([0.5, 0.5]).image_landmarks, synthetic_open_hand())
-    drive(app, open_obs, 0.3)
+    drive(app, obs_at([0.5, 0.5]), 0.3)
     assert not app.gripping
     assert app.grip_opening > 0.5
 
-    pinch_obs = FakeObs(obs_at([0.5, 0.5]).image_landmarks, synthetic_pinch())
-    drive(app, pinch_obs, 0.5)
+    drive(app, obs_at([0.5, 0.5], world=synthetic_pinch()), 0.5)
     assert app.gripping
     assert app.grip_opening < 0.2
 
 
+def test_tucked_thumb_fist_clutches_without_gripping(app):
+    settle(app)
+    drive(app, obs_at([0.5, 0.5], world=synthetic_tucked_fist()), 0.5)
+    assert app.clutched
+    assert not app.gripping
+    assert app.grip_opening == 1.0
+
+
 def test_fist_freezes_tracking(app):
-    drive(app, obs_at([0.5, 0.5]), 0.3)
+    settle(app)
+    drive(app, obs_at([0.5, 0.5], world=synthetic_fist()), 0.3)
+    assert app.frozen
     p0 = app.target_pos.copy()
 
-    fist_img = obs_at([0.8, 0.8]).image_landmarks
-    drive(app, FakeObs(fist_img, synthetic_fist()), 0.5)
-    assert app.frozen
+    drive(app, obs_at([0.8, 0.8], world=synthetic_fist()), 0.5)
     assert np.allclose(app.target_pos, p0)  # target did not follow the fist
 
-    # Opening the hand releases the clutch and tracking resumes.
-    drive(app, obs_at([0.8, 0.5]), 0.5)
+    # Opening the hand releases the clutch; tracking resumes from the
+    # frozen pose (not the hand's new spot) and then follows the hand.
+    drive(app, obs_at([0.8, 0.8]), 0.5)
     assert not app.frozen
-    assert not np.allclose(app.target_pos, p0)
+    assert np.allclose(app.target_pos, p0, atol=1e-6)
+    drive(app, obs_at([0.6, 0.5]), 0.5)
+    assert not np.allclose(app.target_pos, p0, atol=0.02)
+
+
+def test_clutch_debounces_single_frame_glitches(app):
+    settle(app)
+    app.tick(obs_at([0.5, 0.5], world=synthetic_fist()), DT)
+    assert not app.clutched
+    drive(app, obs_at([0.5, 0.5], world=synthetic_fist()), 0.3)
+    assert app.clutched
+    app.tick(obs_at([0.5, 0.5]), DT)
+    assert app.clutched
 
 
 def test_clutch_does_not_drop_held_object(app):
     """Regression: fist-clutching while pinch-holding must not open the
-    gripper (is_fist requires pinch_ratio > pinch_open, which used to flip
-    the hysteresis and release the grasp)."""
-    img = obs_at([0.5, 0.5]).image_landmarks
-    drive(app, FakeObs(img, synthetic_pinch()), 0.5)
+    gripper (is_fist used to require pinch_ratio > pinch_open, which
+    flipped the hysteresis and released the grasp)."""
+    settle(app)
+    drive(app, obs_at([0.5, 0.5], world=synthetic_pinch()), 0.5)
     assert app.gripping and app.grip_opening < 0.2
 
-    drive(app, FakeObs(img, synthetic_fist()), 0.5)  # clutch engaged
+    drive(app, obs_at([0.5, 0.5], world=synthetic_fist()), 0.5)  # clutch engaged
     assert app.frozen
     assert app.grip_opening < 0.2, "gripper opened while clutched"
 
-    drive(app, FakeObs(img, synthetic_open_hand()), 0.5)  # release clutch
+    drive(app, obs_at([0.5, 0.5]), 0.5)  # release clutch
     assert not app.frozen
     assert app.grip_latched
     assert app.grip_opening < 0.2, "grasp dropped on clutch release"
 
     # Re-pinching re-arms normal gripper tracking.
-    drive(app, FakeObs(img, synthetic_pinch()), 0.5)
+    drive(app, obs_at([0.5, 0.5], world=synthetic_pinch()), 0.5)
     assert not app.grip_latched and app.gripping
-    drive(app, FakeObs(img, synthetic_open_hand()), 0.5)
+    drive(app, obs_at([0.5, 0.5]), 0.5)
     assert app.grip_opening > 0.5  # now an open hand releases as usual
+
+
+def test_clutch_resumes_from_frozen_pose(app):
+    """The point of a clutch: reposition the hand without moving the arm."""
+    settle(app)
+    drive(app, obs_at([0.35, 0.5]), 1.0)
+    drive(app, obs_at([0.35, 0.5], world=synthetic_fist()), 0.3)
+    assert app.clutched
+    frozen = app.target_pos.copy()
+    drive(app, obs_at([0.75, 0.65], k=2.4, world=synthetic_fist()), 0.3)
+    assert np.allclose(app.target_pos, frozen)
+
+    away = app.mapper.map_position(np.array([0.75, 0.65]), 2.4)
+    assert np.linalg.norm(away - frozen) > 0.15  # an absolute map would lurch here
+    drive(app, obs_at([0.75, 0.65], k=2.4), 0.5)
+    assert not app.clutched
+    assert np.allclose(app.target_pos, frozen, atol=1e-6)
+
+    drive(app, obs_at([0.7, 0.65], k=2.4), 1.0)  # hand left -> robot +y
+    assert app.target_pos[1] > frozen[1] + 0.03
 
 
 def test_manual_freeze_survives_open_hand(app):
     """Regression: the 'f' freeze used to be undone by the open-hand
     unfreeze rule on the very next frame."""
-    drive(app, obs_at([0.5, 0.5]), 0.3)
+    settle(app)
     app.manual_freeze = True  # what handle_key('f') does
     p0 = app.target_pos.copy()
     drive(app, obs_at([0.8, 0.7]), 0.5)  # open hand, moving
     assert app.frozen
     assert np.allclose(app.target_pos, p0)
+    app.manual_freeze = False
+    drive(app, obs_at([0.8, 0.7]), 0.5)
+    assert np.allclose(app.target_pos, p0, atol=1e-6)  # rebased, no lurch
 
 
-def test_hand_scale_invariant_to_inplane_rotation(app):
-    """Regression: raw normalized landmarks are anisotropic (x/width,
-    y/height), so in-plane rotation used to masquerade as depth motion."""
-    lm = synthetic_open_hand()
-    upright = lm / 3.0  # wrist->MCP mostly along image y
-    # Physically rotate 90 degrees in pixel space, then re-normalize:
-    # pixel-x becomes pixel-y and vice versa, so normalized x picks up a
-    # 1/aspect factor and normalized y an aspect factor.
-    rot90 = upright.copy()
-    rot90[:, [0, 1]] = rot90[:, [1, 0]] * np.array(
-        [1 / app.frame_aspect, app.frame_aspect]
-    )
+def test_calibration_waits_for_a_still_hand(app):
+    cfg = app.cfg.control
+    for i in range(20):  # sweeping in from the edge
+        app.tick(obs_at([-0.1 + i * 0.03, 0.5]), DT)
+    assert not app.calibrated and app.calib_progress == 0.0
+    drive(app, obs_at([0.5, 0.5]), cfg.calib_settle_sec * 0.6)
+    assert not app.calibrated and app.calib_progress > 0.4
+    drive(app, obs_at([0.5, 0.5]), cfg.calib_settle_sec * 0.6)
+    assert app.calibrated
 
-    s_up = app._hand_scale(upright)
-    s_rot = app._hand_scale(rot90)
-    assert s_up == pytest.approx(s_rot, rel=1e-6)
+
+def test_calibration_request_is_immediate_with_a_hand(app):
+    app.tick(obs_at([0.6, 0.4]), DT)
+    assert not app.calibrated
+    app.request_calibration()  # what handle_key('c') does
+    assert app.calibrated and app.mapper.scale_ref is not None
+    app.tick(None, DT)
+    app.request_calibration()  # no hand: re-arm the gate instead
+    assert not app.calibrated
+
+
+def test_lost_hand_holds_position(app):
+    settle(app)
+    app.tick(obs_at([0.75, 0.3]), DT)  # target jumps away; arm still moving
+    q_tracking = app.q_cmd.copy()
+    for _ in range(app.cfg.control.hold_after_lost_frames - 1):
+        app.tick(None, DT)
+    assert not np.allclose(app.q_cmd, q_tracking)  # still converging in the grace window
+    app.tick(None, DT)
+    q_held = app.q_cmd.copy()
+    for _ in range(10):
+        app.tick(None, DT)
+    assert np.array_equal(app.q_cmd, q_held)
+
+
+def test_fast_sweep_tracks_with_little_lag(app):
+    settle(app)
+    drive(app, obs_at([0.35, 0.5]), 1.0)
+    seconds, n = 0.4, 12
+    x = 0.35
+    for i in range(1, n + 1):
+        x = 0.35 + 0.3 * i / n
+        app.tick(obs_at([x, 0.5]), DT)
+    ideal = app.mapper.map_position(np.array([x, 0.5]), 2.0)
+    speed = (0.3 / seconds) * (0.68 / 0.7)  # m/s in robot y
+    lag_sec = abs(ideal[1] - app.target_pos[1]) / speed
+    assert lag_sec < 0.09
 
 
 def test_realtime_budget(app):
     """One control tick (IK + 1/30 s physics) must fit a 30 fps budget."""
     import time
 
-    drive(app, obs_at([0.5, 0.5]), 0.2)  # warm up
+    settle(app)  # warm up
     t0 = time.perf_counter()
     n = 60
     for _ in range(n):
-        app.process_hand(obs_at([0.55, 0.45]), DT)
-        app.solve_and_command(DT)
+        app.tick(obs_at([0.55, 0.45]), DT)
         app.sim.step(DT)
     per_tick_ms = (time.perf_counter() - t0) / n * 1000
     assert per_tick_ms < 15, f"control tick {per_tick_ms:.1f} ms exceeds budget"

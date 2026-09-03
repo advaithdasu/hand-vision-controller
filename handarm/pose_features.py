@@ -35,16 +35,62 @@ HAND_CONNECTIONS = [
     (0, 17),
 ]
 
+# Rigid palm segments used for the depth estimate: four segments spanning
+# both palm axes so no single tilt direction can collapse the estimate.
+_PALM_SEGMENTS = np.array(
+    [[WRIST, MIDDLE_MCP], [INDEX_MCP, PINKY_MCP], [WRIST, INDEX_MCP], [WRIST, PINKY_MCP]]
+)
+# Below this fraction of the palm's true extent the image-plane projection
+# is too foreshortened to trust; the estimate saturates instead of blowing
+# up as the palm turns edge-on.
+_FORESHORTEN_FLOOR = 0.3
+
+# Extension ratio above which a finger counts as extended.
+EXTENDED_MIN = 1.4
+# Extension ratio below which a finger counts as curled into the palm. A
+# pinching index finger reads ~1.3 (its tip meets the thumb out in front of
+# the palm), a fisted one ~0.9-1.1.
+CURLED_MAX = 1.2
+
 
 def hand_scale(lm: np.ndarray) -> float:
     """Characteristic hand size: wrist to middle-finger MCP distance."""
     return float(np.linalg.norm(lm[MIDDLE_MCP] - lm[WRIST]))
 
 
+def apparent_scale(image_lm: np.ndarray, world_lm: np.ndarray, frame_aspect: float) -> float:
+    """Apparent hand size that is invariant to palm orientation.
+
+    The naive proxy (wrist-to-knuckle length in the image) shrinks when the
+    palm pitches toward the camera, so tilting the wrist masquerades as
+    reaching. MediaPipe also returns metric, camera-aligned world landmarks
+    for the same hand; the ratio of the image-plane palm extent to the
+    world-space palm extent *projected onto the same plane* cancels the
+    foreshortening and is proportional to 1 / depth.
+
+    Image x is scaled by the frame aspect so the measure is isotropic (in
+    units of image height per meter).
+    """
+    a, b = _PALM_SEGMENTS[:, 0], _PALM_SEGMENTS[:, 1]
+    d_img = (image_lm[b, :2] - image_lm[a, :2]) * np.array([frame_aspect, 1.0])
+    d_w = world_lm[b] - world_lm[a]
+    img_sq = float(np.sum(d_img ** 2))
+    proj_sq = float(np.sum(d_w[:, :2] ** 2))
+    full_sq = float(np.sum(d_w ** 2))
+    floor_sq = _FORESHORTEN_FLOOR ** 2 * full_sq
+    return float(np.sqrt(img_sq / (max(proj_sq, floor_sq) + 1e-12)))
+
+
 def palm_center(lm: np.ndarray) -> np.ndarray:
     """Centroid of the wrist and the four finger MCP knuckles."""
     idx = [WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP]
     return lm[idx].mean(axis=0)
+
+
+def fully_in_frame(lm: np.ndarray, margin: float) -> bool:
+    """True if every (normalized-image) landmark lies inside the margin."""
+    xy = lm[:, :2]
+    return bool(np.all(xy >= margin) and np.all(xy <= 1.0 - margin))
 
 
 def palm_frame(lm: np.ndarray) -> np.ndarray:
@@ -85,23 +131,23 @@ def finger_extensions(lm: np.ndarray) -> dict:
     return out
 
 
-def count_extended_from(ext: dict, threshold: float = 1.4) -> int:
+def count_extended_from(ext: dict, threshold: float = EXTENDED_MIN) -> int:
     return sum(1 for r in ext.values() if r > threshold)
 
 
-def count_extended(lm: np.ndarray, threshold: float = 1.4) -> int:
+def count_extended(lm: np.ndarray, threshold: float = EXTENDED_MIN) -> int:
     return count_extended_from(finger_extensions(lm), threshold)
 
 
-def is_fist_from(ext: dict, pinch: float) -> bool:
-    """Fist from precomputed extension ratios and pinch ratio.
+def is_fist_from(ext: dict) -> bool:
+    """Fist from precomputed extension ratios: all four fingers curled.
 
-    The pinch check keeps a pinch (index curled toward thumb) from being
-    misread as a fist when the other fingers relax.
+    The thumb is deliberately ignored — a thumb tucked over the fingers
+    sits close to the index tip and would otherwise read as a pinch,
+    closing the gripper when the operator meant to clutch.
     """
-    curled = sum(1 for name in ("middle", "ring", "pinky") if ext[name] < 1.25)
-    return curled == 3 and ext["index"] < 1.25 and pinch > 0.5
+    return all(ext[name] < CURLED_MAX for name in FINGERS)
 
 
 def is_fist(lm: np.ndarray) -> bool:
-    return is_fist_from(finger_extensions(lm), pinch_ratio(lm))
+    return is_fist_from(finger_extensions(lm))

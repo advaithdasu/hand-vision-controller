@@ -42,9 +42,10 @@ class MappingConfig:
     # Active region of the (normalized) image that maps onto the workspace.
     img_x_range: tuple = (0.15, 0.85)
     img_y_range: tuple = (0.15, 0.85)
-    # Depth from apparent hand size (wrist -> middle MCP, aspect-corrected
-    # normalized units), as ratios of the calibrated neutral size.
-    default_hand_scale: float = 0.17  # used until the operator calibrates
+    # Depth from apparent hand size (pose_features.apparent_scale, image
+    # height per meter), as ratios of the calibrated neutral size. The
+    # default only matters before the first calibration.
+    default_hand_scale: float = 1.9
     depth_near_ratio: float = 1.6     # hand this much bigger -> arm retracted
     depth_far_ratio: float = 0.6      # hand this much smaller -> arm extended
     # Maximum end-effector tilt away from the default (tool-down) pose.
@@ -67,14 +68,19 @@ class IKConfig:
 
 @dataclass
 class ControlConfig:
-    # One Euro filter for the hand target position.
-    pos_min_cutoff: float = 1.2      # Hz
-    pos_beta: float = 0.015
+    # One Euro filter for the hand target position. beta is in Hz per
+    # (m/s): hovering gets the 1 Hz floor (no jitter), a 1 m/s sweep opens
+    # the cutoff to 3.5 Hz (~45 ms lag instead of ~160 ms).
+    pos_min_cutoff: float = 1.0      # Hz
+    pos_beta: float = 2.5
     pos_d_cutoff: float = 1.0
-    # Orientation low-pass (slerp factor cutoff, Hz).
-    ori_cutoff: float = 3.0
+    # Same for orientation; beta in Hz per (rad/s).
+    ori_cutoff: float = 2.0
+    ori_beta: float = 1.0
+    ori_d_cutoff: float = 1.0
+    pinch_cutoff: float = 8.0
     # Joint-space velocity limit applied to commanded targets.
-    max_joint_vel: float = 2.5       # rad/s
+    max_joint_vel: float = 3.5       # rad/s
     # Pinch hysteresis (ratio of thumb-index distance to hand scale).
     pinch_close: float = 0.32
     pinch_open: float = 0.45
@@ -82,6 +88,16 @@ class ControlConfig:
     aperture_margin: float = 0.25
     # Frames without a detection before the arm holds position.
     hold_after_lost_frames: int = 5
+    # Gesture debouncing: a fist must persist this long before it clutches,
+    # an open hand this long before it releases, so a single misdetected
+    # frame can neither freeze the arm nor drop it back into tracking.
+    clutch_engage_sec: float = 0.12
+    clutch_release_sec: float = 0.08
+    # Auto-calibration gate: the hand must be fully inside the frame and
+    # nearly still for this long before its pose is taken as neutral.
+    calib_settle_sec: float = 0.5
+    calib_max_speed: float = 0.25    # image heights per second
+    calib_edge_margin: float = 0.03  # normalized image units
 
 
 @dataclass

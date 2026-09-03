@@ -2,16 +2,22 @@
 
 Keyboard (focus the display window):
   q / ESC   quit
-  c         calibrate: capture current hand pose as the neutral reference
+  c         calibrate: take the current hand pose as the neutral reference
   o         toggle orientation control (position-only when off)
   f         manual freeze toggle (independent of the fist clutch)
   r         start / stop recording a demonstration
   x         reset the simulation scene
 
+Calibration: the first detection is usually a hand entering at the frame
+edge, so auto-calibration waits until the hand is fully in view and nearly
+still for half a second. Pressing `c` calibrates immediately.
+
 Clutching: a fist freezes arm *and gripper* so the operator can reposition
-their hand. If an object was held when the clutch engaged, the grasp stays
-latched after release until the operator pinches again — otherwise opening
-the hand to disengage the clutch would drop the object.
+their hand. On release the maps are re-anchored so the arm resumes from
+where it froze rather than swinging to the hand's new absolute position.
+If an object was held when the clutch engaged, the grasp stays latched
+after release until the operator pinches again — otherwise opening the
+hand to disengage the clutch would drop the object.
 """
 
 from __future__ import annotations
@@ -46,16 +52,20 @@ class TeleopApp:
 
         ctl = cfg.control
         self.pos_filter = OneEuroFilter(ctl.pos_min_cutoff, ctl.pos_beta, ctl.pos_d_cutoff)
-        self.ori_filter = QuaternionLowPass(ctl.ori_cutoff)
-        self.pinch_filter = ScalarLowPass(cutoff=8.0)
+        self.ori_filter = QuaternionLowPass(ctl.ori_cutoff, ctl.ori_beta, ctl.ori_d_cutoff)
+        self.pinch_filter = ScalarLowPass(cutoff=ctl.pinch_cutoff)
         self.profiler = LatencyProfiler()
         self.recorder = Recorder(cfg.recordings_dir)
 
         self.frame_aspect = cfg.camera_width / cfg.camera_height
-        self.orientation_on = cfg.orientation_control
+        self._orientation_on = cfg.orientation_control
         self.calibrated = False
+        self.calib_progress = 0.0
         self.lost_frames = 999
         self.last_ik = None
+        self.last_obs = None
+        self._calib_hold = 0.0
+        self._calib_prev_center = None
         self.reset_control()
 
     def reset_control(self) -> None:
@@ -66,87 +76,165 @@ class TeleopApp:
         self.gripping = False
         self.grip_latched = False
         self.clutched = False
-        self.manual_freeze = False
+        self._manual_freeze = False
+        self._fist_time = 0.0
+        self._open_time = 0.0
+        self._rebase_pos_pending = False
+        self._rebase_ori_pending = False
+        self.mapper.pos_offset = np.zeros(3)
         self.pos_filter.reset()
         self.ori_filter.reset()
         self.pinch_filter.reset()
 
     @property
     def frozen(self) -> bool:
-        return self.clutched or self.manual_freeze
+        return self.clutched or self._manual_freeze
 
-    def _hand_scale(self, image_landmarks: np.ndarray) -> float:
-        """Apparent hand size in aspect-corrected normalized units.
+    @property
+    def manual_freeze(self) -> bool:
+        return self._manual_freeze
 
-        MediaPipe normalizes x by image width and y by height, so on a
-        16:9 frame a raw wrist->MCP norm would change ~1.8x as the hand
-        rotates in-plane; scaling x by the aspect ratio makes the measure
-        isotropic (in units of image height).
-        """
-        lm = image_landmarks.copy()
-        lm[:, 0] *= self.frame_aspect
-        return pf.hand_scale(lm)
+    @manual_freeze.setter
+    def manual_freeze(self, on: bool) -> None:
+        if self._manual_freeze and not on:
+            self._mark_rebase()
+        self._manual_freeze = on
+
+    @property
+    def orientation_on(self) -> bool:
+        return self._orientation_on
+
+    @orientation_on.setter
+    def orientation_on(self, on: bool) -> None:
+        # Turning orientation back on would otherwise snap the wrist from
+        # tool-down to the hand's absolute tilt.
+        if not self._orientation_on and on:
+            self._rebase_ori_pending = True
+        self._orientation_on = on
+
+    def _mark_rebase(self) -> None:
+        self._rebase_pos_pending = True
+        self._rebase_ori_pending = True
+
+    def _hand_scale(self, obs) -> float:
+        """Orientation-invariant apparent hand size (see pose_features)."""
+        return pf.apparent_scale(obs.image_landmarks, obs.world_landmarks, self.frame_aspect)
+
+    def request_calibration(self) -> None:
+        """Take the current hand pose as neutral. With a hand in view this
+        is immediate (frozen or not); otherwise the hold-still gate re-arms
+        for the next detection."""
+        if self.last_obs is not None:
+            self.calibrate(self.last_obs)
+        else:
+            self.calibrated = False
+            self._calib_hold = 0.0
+            self.calib_progress = 0.0
 
     def calibrate(self, obs) -> None:
         """Capture the current hand pose as the neutral reference."""
-        self.mapper.calibrate(
-            self._hand_scale(obs.image_landmarks), pf.palm_frame(obs.world_landmarks)
-        )
+        self.mapper.calibrate(self._hand_scale(obs), pf.palm_frame(obs.world_landmarks))
         self.calibrated = True
+        self.calib_progress = 1.0
+        self._calib_hold = 0.0
+        self._rebase_pos_pending = False
+        self._rebase_ori_pending = False
         self.pos_filter.reset()
         self.ori_filter.reset()
+
+    def _update_calibration_gate(self, obs, dt: float) -> None:
+        """Auto-calibrate once the hand is fully in view and nearly still."""
+        ctl = self.cfg.control
+        c = pf.palm_center(obs.image_landmarks)[:2] * np.array([self.frame_aspect, 1.0])
+        speed = 0.0
+        if self._calib_prev_center is not None and dt > 0:
+            speed = float(np.linalg.norm(c - self._calib_prev_center)) / dt
+        self._calib_prev_center = c
+        steady = (
+            pf.fully_in_frame(obs.image_landmarks, ctl.calib_edge_margin)
+            and speed < ctl.calib_max_speed
+        )
+        self._calib_hold = self._calib_hold + dt if steady else 0.0
+        self.calib_progress = min(self._calib_hold / ctl.calib_settle_sec, 1.0)
+        if self._calib_hold >= ctl.calib_settle_sec:
+            self.calibrate(obs)
+
+    def _update_gripper(self, pinch_raw: float, dt: float) -> None:
+        """Pinch ratio -> aperture, with hysteresis for the grab flag."""
+        ctl = self.cfg.control
+        pinch = self.pinch_filter(pinch_raw, dt)
+        if self.grip_latched:
+            if pinch < ctl.pinch_close:
+                self.grip_latched = False  # operator re-pinched: re-arm
+            return
+        if self.gripping and pinch > ctl.pinch_open:
+            self.gripping = False
+        elif not self.gripping and pinch < ctl.pinch_close:
+            self.gripping = True
+        self.grip_opening = float(np.clip(
+            (pinch - ctl.pinch_close)
+            / (ctl.pinch_open + ctl.aperture_margin - ctl.pinch_close),
+            0, 1,
+        ))
 
     # ---------------- per-frame pipeline ----------------
 
     def process_hand(self, obs, dt: float) -> None:
         """Turn a hand observation into filtered targets and gripper state."""
+        ctl = self.cfg.control
         img, world = obs.image_landmarks, obs.world_landmarks
         ext = pf.finger_extensions(world)
         pinch_raw = pf.pinch_ratio(world)
 
-        # Clutch: a fist freezes tracking so the operator can reposition
-        # their hand without dragging the arm along; an open hand releases.
-        if pf.is_fist_from(ext, pinch_raw):
-            self.clutched = True
-        elif self.clutched and pf.count_extended_from(ext) >= 3:
+        # Clutch: a held fist freezes tracking so the operator can reposition
+        # their hand without dragging the arm along; a held open hand
+        # releases. Both are debounced against single-frame misdetections.
+        fist = pf.is_fist_from(ext)
+        opened = pf.count_extended_from(ext) >= 3
+        self._fist_time = self._fist_time + dt if fist else 0.0
+        self._open_time = self._open_time + dt if opened else 0.0
+        if not self.clutched:
+            if self._fist_time >= ctl.clutch_engage_sec:
+                self.clutched = True
+        elif self._open_time >= ctl.clutch_release_sec:
             self.clutched = False
             self.pinch_filter.reset()
             if self.gripping:
                 # Keep the grasp until the operator pinches again, so
                 # releasing the clutch doesn't drop a held object.
                 self.grip_latched = True
+            self._mark_rebase()
 
         if self.frozen:
             return
 
-        # Gripper: pinch ratio -> aperture, with hysteresis for the grab flag.
-        ctl = self.cfg.control
-        pinch = self.pinch_filter(pinch_raw, dt)
-        if self.grip_latched:
-            if pinch < ctl.pinch_close:
-                self.grip_latched = False  # operator re-pinched: re-arm
-        else:
-            if self.gripping and pinch > ctl.pinch_open:
-                self.gripping = False
-            elif not self.gripping and pinch < ctl.pinch_close:
-                self.gripping = True
-            self.grip_opening = float(np.clip(
-                (pinch - ctl.pinch_close)
-                / (ctl.pinch_open + ctl.aperture_margin - ctl.pinch_close),
-                0, 1,
-            ))
+        # A fist-shaped frame never drives the gripper, even before the
+        # clutch debounce elapses: a tucked thumb can read as a tight pinch.
+        if not fist:
+            self._update_gripper(pinch_raw, dt)
 
         if not self.calibrated:
-            self.calibrate(obs)
+            self._update_calibration_gate(obs, dt)
+            if not self.calibrated:
+                return
 
-        scale = self._hand_scale(img)
-        raw_pos = self.mapper.map_position(pf.palm_center(img)[:2], scale)
-        self.target_pos = self.pos_filter(raw_pos, dt)
-        if self.orientation_on:
-            raw_quat = self.mapper.map_orientation(pf.palm_frame(world))
-            self.target_quat = self.ori_filter(raw_quat, dt)
-        else:
-            self.target_quat = self.ori_filter(TOOL_DOWN_QUAT, dt)
+        scale = self._hand_scale(obs)
+        xy = pf.palm_center(img)[:2]
+        if self._rebase_pos_pending:
+            self.mapper.rebase_position(xy, scale, self.target_pos)
+            self.pos_filter.reset()
+            self._rebase_pos_pending = False
+        self.target_pos = self.pos_filter(self.mapper.map_position(xy, scale), dt)
+
+        raw_quat = TOOL_DOWN_QUAT
+        if self._orientation_on:
+            palm_rot = pf.palm_frame(world)
+            if self._rebase_ori_pending:
+                self.mapper.rebase_orientation(palm_rot, self.target_quat)
+                self.ori_filter.reset()
+            raw_quat = self.mapper.map_orientation(palm_rot)
+        self._rebase_ori_pending = False
+        self.target_quat = self.ori_filter(raw_quat, dt)
 
     def solve_and_command(self, dt: float) -> None:
         """IK to the current target, then rate-limit the joint command."""
@@ -161,12 +249,12 @@ class TeleopApp:
     def hud_lines(self, hand_visible: bool) -> list[tuple[str, bool]]:
         p = self.profiler
         ik = self.last_ik
-        if self.manual_freeze:
+        if self._manual_freeze:
             mode = "FROZEN (key)"
         elif self.clutched:
-            mode = "CLUTCHED (fist)"
+            mode = "CLUTCHED (fist) - open your hand to resume"
         else:
-            mode = "pos + orientation" if self.orientation_on else "position only"
+            mode = "pos + orientation" if self._orientation_on else "position only"
         grip = "LATCHED" if self.grip_latched else ("CLOSED" if self.gripping else "open")
         lines = [
             (f"FPS {p.fps():5.1f}   end-to-end {p.mean_ms('total'):5.1f} ms", False),
@@ -185,7 +273,11 @@ class TeleopApp:
                  not ik.converged)
             )
         if not self.calibrated:
-            lines.append(("show your hand to calibrate (press c to re-zero)", True))
+            if hand_visible:
+                n = int(round(self.calib_progress * 10))
+                lines.append((f"hold still to lock on  [{'#' * n}{'.' * (10 - n)}]", True))
+            else:
+                lines.append(("show your open hand to the camera (c re-zeros)", True))
         if self.recorder.active:
             lines.append(("REC", True))
         return lines
@@ -225,15 +317,7 @@ class TeleopApp:
                 obs = tracker.detect(rgb, int((now - t_start) * 1000))
                 self.profiler.mark("detect")
 
-                if obs is not None:
-                    self.lost_frames = 0
-                    self.process_hand(obs, dt)
-                else:
-                    self.lost_frames += 1
-
-                hold = self.lost_frames >= self.cfg.control.hold_after_lost_frames
-                if not (hold and obs is None):
-                    self.solve_and_command(dt)
+                self.tick(obs, dt)
                 self.profiler.mark("ik")
 
                 self.sim.step(dt)
@@ -253,7 +337,7 @@ class TeleopApp:
                 self.profiler.mark("draw")
                 self.profiler.frame_end()
 
-                if not self.handle_key(key, obs):
+                if not self.handle_key(key):
                     break
         finally:
             self.recorder.stop()
@@ -261,7 +345,23 @@ class TeleopApp:
             cap.release()
             cv2.destroyAllWindows()
 
-    def handle_key(self, key: int, obs) -> bool:
+    def tick(self, obs, dt: float) -> None:
+        """One control tick without physics: gesture/mapping, then IK unless
+        the hand has been lost long enough to hold position."""
+        self.last_obs = obs
+        if obs is not None:
+            self.lost_frames = 0
+            self.process_hand(obs, dt)
+        else:
+            self.lost_frames += 1
+            self._fist_time = 0.0
+            self._open_time = 0.0
+            self._calib_prev_center = None
+        hold = self.lost_frames >= self.cfg.control.hold_after_lost_frames
+        if not hold:
+            self.solve_and_command(dt)
+
+    def handle_key(self, key: int) -> bool:
         if key in (ord("q"), 27):
             return False
         if key == ord("o"):
@@ -271,8 +371,8 @@ class TeleopApp:
         elif key == ord("x"):
             self.sim.reset()
             self.reset_control()
-        elif key == ord("c") and obs is not None:
-            self.calibrate(obs)
+        elif key == ord("c"):
+            self.request_calibration()
         elif key == ord("r"):
             if self.recorder.active:
                 path = self.recorder.stop()

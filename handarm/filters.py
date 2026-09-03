@@ -1,4 +1,4 @@
-"""Signal smoothing: One Euro filter and a slerp-based orientation low-pass.
+"""Signal smoothing: One Euro filters for position and orientation.
 
 The One Euro filter (Casiez et al., 2012) adapts its cutoff with signal
 speed: heavy smoothing when the hand hovers (kills jitter), light smoothing
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .transforms import quat_normalize, quat_slerp
+from .transforms import quat_angle_between, quat_normalize, quat_slerp
 
 
 def _smoothing_factor(dt: float, cutoff: float) -> float:
@@ -34,10 +34,14 @@ class OneEuroFilter:
 
     def __call__(self, x: np.ndarray, dt: float) -> np.ndarray:
         x = np.asarray(x, dtype=float)
-        if self._x is None or dt <= 0:
+        if self._x is None:
             self._x = x.copy()
             self._dx = np.zeros_like(x)
             return x.copy()
+        # A zero/negative dt (coarsened clocks) must not wipe filter memory;
+        # hold the previous estimate instead of passing raw jitter through.
+        if dt <= 0:
+            return self._x.copy()
 
         # Derivative estimate, low-passed.
         dx = (x - self._x) / dt
@@ -52,21 +56,31 @@ class OneEuroFilter:
 
 
 class QuaternionLowPass:
-    """First-order low-pass on orientation via slerp toward the target."""
+    """One Euro filter on orientation: slerp toward the target with a cutoff
+    that opens up with angular speed. beta = 0 degrades to a plain
+    first-order low-pass."""
 
-    def __init__(self, cutoff: float = 3.0):
+    def __init__(self, cutoff: float = 3.0, beta: float = 0.0, d_cutoff: float = 1.0):
         self.cutoff = cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
         self._q = None
+        self._rate = 0.0  # low-passed angular speed of the input, rad/s
 
     def reset(self) -> None:
         self._q = None
+        self._rate = 0.0
 
     def __call__(self, q: np.ndarray, dt: float) -> np.ndarray:
         q = quat_normalize(q)
-        if self._q is None or dt <= 0:
+        if self._q is None:
             self._q = q.copy()
             return q.copy()
-        a = _smoothing_factor(dt, self.cutoff)
+        if dt <= 0:
+            return self._q.copy()
+        a_d = _smoothing_factor(dt, self.d_cutoff)
+        self._rate = a_d * (quat_angle_between(self._q, q) / dt) + (1 - a_d) * self._rate
+        a = _smoothing_factor(dt, self.cutoff + self.beta * self._rate)
         self._q = quat_slerp(self._q, q, a)
         return self._q.copy()
 
@@ -82,8 +96,10 @@ class ScalarLowPass:
         self._y = None
 
     def __call__(self, y: float, dt: float) -> float:
-        if self._y is None or dt <= 0:
+        if self._y is None:
             self._y = float(y)
+            return self._y
+        if dt <= 0:
             return self._y
         a = _smoothing_factor(dt, self.cutoff)
         self._y = a * float(y) + (1 - a) * self._y

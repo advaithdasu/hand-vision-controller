@@ -30,7 +30,7 @@ def test_positions_stay_in_workspace(mapper):
 
 def test_position_directions(mapper):
     center = np.array([0.5, 0.5])
-    mid_scale = 0.19
+    mid_scale = mapper.cfg.default_hand_scale
     p0 = mapper.map_position(center, mid_scale)
     # Hand moves right in the mirrored image -> robot y decreases.
     p_right = mapper.map_position(center + [0.2, 0], mid_scale)
@@ -39,7 +39,7 @@ def test_position_directions(mapper):
     p_up = mapper.map_position(center - [0, 0.2], mid_scale)
     assert p_up[2] > p0[2]
     # Hand approaches the camera (bigger) -> arm retracts (x decreases).
-    p_near = mapper.map_position(center, mid_scale + 0.06)
+    p_near = mapper.map_position(center, mid_scale * 1.3)
     assert p_near[0] < p0[0]
 
 
@@ -61,6 +61,40 @@ def test_depth_window_follows_calibration(mapper):
     # Depth motion still works around the calibrated reference.
     assert mapper.map_position(center, big_ref * 1.5)[0] < x_big_hand
     assert mapper.map_position(center, big_ref * 0.7)[0] > x_big_hand
+
+
+def test_rebase_position_resumes_from_frozen_target(mapper):
+    """After a clutch, the hand's new pose must map onto the frozen target,
+    with relative motion still steering from that anchor."""
+    mapper.calibrate(2.0, np.eye(3))
+    frozen = mapper.map_position(np.array([0.5, 0.5]), 2.0)
+    mapper.rebase_position(np.array([0.8, 0.3]), 2.6, frozen)
+    assert np.allclose(mapper.map_position(np.array([0.8, 0.3]), 2.6), frozen)
+    # Hand right in the mirrored image -> robot -y, as without the offset.
+    assert mapper.map_position(np.array([0.85, 0.3]), 2.6)[1] < frozen[1]
+    ws = mapper.cfg.workspace
+    p = mapper.map_position(np.array([0.2, 0.9]), 1.0)
+    assert ws.x[0] <= p[0] <= ws.x[1] and ws.z[0] <= p[2] <= ws.z[1]
+
+
+def test_calibration_clears_rebase_offset(mapper):
+    mapper.calibrate(2.0, np.eye(3))
+    mapper.rebase_position(np.array([0.9, 0.9]), 2.0, np.array([0.4, 0.0, 0.3]))
+    assert np.linalg.norm(mapper.pos_offset) > 1e-6
+    mapper.calibrate(2.0, np.eye(3))
+    assert np.allclose(mapper.pos_offset, 0)
+
+
+def test_rebase_orientation_anchors_current_palm_to_frozen_wrist(mapper):
+    mapper.calibrate(2.0, np.eye(3))
+    ang = 0.4
+    tilt = np.array([[np.cos(ang), 0, np.sin(ang)], [0, 1, 0], [-np.sin(ang), 0, np.cos(ang)]])
+    frozen = mapper.map_orientation(tilt)
+    palm_now = matrix_from_quat(np.array([0.3, -0.2, 0.5, 0.79]))
+    mapper.rebase_orientation(palm_now, frozen)
+    assert quat_angle_between(mapper.map_orientation(palm_now), frozen) < 1e-9
+    # Further palm rotation still moves the wrist away from the anchor.
+    assert quat_angle_between(mapper.map_orientation(tilt @ palm_now), frozen) > 0.2
 
 
 def test_orientation_identity_before_calibration(mapper):
