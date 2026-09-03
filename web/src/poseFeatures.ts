@@ -43,6 +43,57 @@ export function handScale(lm: Landmarks): number {
   return vecNorm(vecSub(lm[MIDDLE_MCP], lm[WRIST]));
 }
 
+/**
+ * Rigid palm segments used for the depth estimate. Four segments spanning
+ * both palm axes so no single tilt direction can collapse the estimate.
+ */
+const PALM_SEGMENTS: [number, number][] = [
+  [WRIST, MIDDLE_MCP],
+  [INDEX_MCP, PINKY_MCP],
+  [WRIST, INDEX_MCP],
+  [WRIST, PINKY_MCP],
+];
+
+/**
+ * Below this fraction of the palm's true extent, the image-plane
+ * projection is too foreshortened to trust; the estimate saturates
+ * instead of blowing up as the palm turns edge-on.
+ */
+const FORESHORTEN_FLOOR = 0.3;
+
+/**
+ * Apparent hand size that is invariant to palm orientation.
+ *
+ * The naive proxy (wrist-to-knuckle length in the image) shrinks when the
+ * palm pitches toward the camera, so tilting the wrist masquerades as
+ * reaching. MediaPipe also returns metric, camera-aligned world landmarks
+ * for the same hand; the ratio of the image-plane palm extent to the
+ * world-space palm extent *projected onto the same plane* cancels the
+ * foreshortening and is proportional to 1 / depth.
+ *
+ * Image x is scaled by the frame aspect so the measure is isotropic (in
+ * units of image height per meter).
+ */
+export function apparentScale(
+  imageLm: Landmarks,
+  worldLm: Landmarks,
+  frameAspect: number,
+): number {
+  let imgSq = 0;
+  let projSq = 0;
+  let fullSq = 0;
+  for (const [a, b] of PALM_SEGMENTS) {
+    const dx = (imageLm[b][0] - imageLm[a][0]) * frameAspect;
+    const dy = imageLm[b][1] - imageLm[a][1];
+    imgSq += dx * dx + dy * dy;
+    const w = vecSub(worldLm[b], worldLm[a]);
+    projSq += w[0] * w[0] + w[1] * w[1];
+    fullSq += w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+  }
+  const floorSq = FORESHORTEN_FLOOR * FORESHORTEN_FLOOR * fullSq;
+  return Math.sqrt(imgSq / (Math.max(projSq, floorSq) + 1e-12));
+}
+
 /** Centroid of the wrist and the four finger MCP knuckles. */
 export function palmCenter(lm: Landmarks): Vec3 {
   const idx = [WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP];
@@ -53,6 +104,15 @@ export function palmCenter(lm: Landmarks): Vec3 {
     c[2] += lm[i][2] / idx.length;
   }
   return c;
+}
+
+/** True if every landmark lies inside the image with the given margin. */
+export function fullyInFrame(lm: Landmarks, margin: number): boolean {
+  for (const p of lm) {
+    if (p[0] < margin || p[0] > 1 - margin) return false;
+    if (p[1] < margin || p[1] > 1 - margin) return false;
+  }
+  return true;
 }
 
 /**
@@ -86,18 +146,28 @@ export function fingerExtensions(lm: Landmarks): Record<string, number> {
   return out;
 }
 
+/** Extension ratio above which a finger counts as extended. */
+export const EXTENDED_MIN = 1.4;
+/**
+ * Extension ratio below which a finger counts as curled into the palm.
+ * A pinching index finger reads ~1.3 (its tip meets the thumb out in
+ * front of the palm), a fisted one ~0.9-1.1.
+ */
+export const CURLED_MAX = 1.2;
+
 export function countExtendedFrom(
   ext: Record<string, number>,
-  threshold = 1.4,
+  threshold = EXTENDED_MIN,
 ): number {
   return Object.values(ext).filter((r) => r > threshold).length;
 }
 
 /**
- * Fist from precomputed extension ratios and pinch ratio. The pinch check
- * keeps a pinch from being misread as a fist when the other fingers relax.
+ * Fist from precomputed extension ratios: all four fingers curled into the
+ * palm. The thumb is deliberately ignored — a thumb tucked over the
+ * fingers sits close to the index tip and would otherwise read as a
+ * pinch, closing the gripper when the operator meant to clutch.
  */
-export function isFistFrom(ext: Record<string, number>, pinch: number): boolean {
-  const curled = ["middle", "ring", "pinky"].filter((n) => ext[n] < 1.25).length;
-  return curled === 3 && ext["index"] < 1.25 && pinch > 0.5;
+export function isFistFrom(ext: Record<string, number>): boolean {
+  return Object.keys(FINGERS).every((n) => ext[n] < CURLED_MAX);
 }

@@ -5,7 +5,7 @@
  * smoothing when the hand hovers, light smoothing during fast moves.
  */
 
-import { type Quat, quatNormalize, quatSlerp } from "./transforms";
+import { type Quat, quatAngleBetween, quatNormalize, quatSlerp } from "./transforms";
 
 function smoothingFactor(dt: number, cutoff: number): number {
   const r = 2 * Math.PI * cutoff * dt;
@@ -52,14 +52,24 @@ export class OneEuroFilter {
   }
 }
 
-/** First-order low-pass on orientation via slerp toward the target. */
+/**
+ * One Euro filter on orientation: slerp toward the target with a cutoff
+ * that opens up with angular speed. beta = 0 degrades to a plain
+ * first-order low-pass.
+ */
 export class QuaternionLowPass {
   private q: Quat | null = null;
+  private rate = 0; // low-passed angular speed of the input, rad/s
 
-  constructor(private cutoff = 3.0) {}
+  constructor(
+    private minCutoff = 3.0,
+    private beta = 0.0,
+    private dCutoff = 1.0,
+  ) {}
 
   reset(): void {
     this.q = null;
+    this.rate = 0;
   }
 
   apply(q: Quat, dt: number): Quat {
@@ -69,7 +79,10 @@ export class QuaternionLowPass {
       return [...q];
     }
     if (dt <= 0) return [...this.q];
-    this.q = quatSlerp(this.q, q, smoothingFactor(dt, this.cutoff));
+    const aD = smoothingFactor(dt, this.dCutoff);
+    this.rate = aD * (quatAngleBetween(this.q, q) / dt) + (1 - aD) * this.rate;
+    const cutoff = this.minCutoff + this.beta * this.rate;
+    this.q = quatSlerp(this.q, q, smoothingFactor(dt, cutoff));
     return [...this.q];
   }
 }

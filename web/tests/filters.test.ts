@@ -41,6 +41,23 @@ describe("OneEuroFilter", () => {
 });
 
 describe("QuaternionLowPass", () => {
+  it("opens its cutoff with angular speed when beta > 0", () => {
+    // A steady 2 rad/s sweep: the adaptive filter must trail the input by
+    // less than the fixed-cutoff one.
+    const fixed = new QuaternionLowPass(2.0, 0);
+    const adaptive = new QuaternionLowPass(2.0, 1.0);
+    const sweep = (t: number): Quat => [0, 0, Math.sin(t), Math.cos(t)]; // 2t rad about z
+    let lagFixed = 0;
+    let lagAdaptive = 0;
+    for (let i = 0; i < 90; i++) {
+      const q = sweep(i * DT);
+      lagFixed = quatAngleBetween(fixed.apply(q, DT), q);
+      lagAdaptive = quatAngleBetween(adaptive.apply(q, DT), q);
+    }
+    expect(lagAdaptive).toBeLessThan(0.7 * lagFixed);
+    expect(lagAdaptive).toBeLessThan(0.1);
+  });
+
   it("converges to a held target and smooths steps", () => {
     const f = new QuaternionLowPass(3.0);
     const a: Quat = [0, 0, 0, 1];
