@@ -34,9 +34,17 @@ import {
 } from "./transforms";
 import { type FKResult } from "./kinematics";
 
+/** The page's accent color, so a rebrand is one CSS edit (style.css --accent). */
+function cssAccent(): number {
+  const v = typeof getComputedStyle === "function"
+    ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
+    : "";
+  return v ? new THREE.Color(v).getHex() : 0xf27317;
+}
+
 const COLORS = {
   dark: 0x33383f,
-  orange: 0xf27317,
+  orange: cssAccent(),
   steel: 0xc0c5c9,
   blue: 0x2673e6,
   tray: 0x8c6b47,
@@ -341,6 +349,14 @@ export class ArmScene {
       cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
       cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    });
+  }
+
+  /** Current cube centers, world frame, in spawn order. */
+  cubePositions(): Vec3[] {
+    return this.cubes.map((c) => {
+      const t = c.body.translation();
+      return [t.x, t.y, t.z];
     });
   }
 

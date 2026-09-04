@@ -1,19 +1,34 @@
-/** Bootstrap and render loop: camera -> tracker -> controller -> scene. */
+/**
+ * Bootstrap and render loop.
+ *
+ * Two ways to drive the arm share one loop: the camera (hand -> tracker ->
+ * controller) and the autopilot (scripted targets -> controller), both
+ * ending in the same IK -> command -> physics -> render path.
+ */
 
 import { TeleopController } from "./app";
 import type { ArmScene } from "./armScene";
-import type { HandObservation, HandTracker } from "./handTracker";
+import type { Autopilot } from "./autopilot";
+import type { HandObservation, HandTracker, ProgressFn } from "./handTracker";
 import { HAND_CONNECTIONS, type Landmarks } from "./poseFeatures";
 
-const video = document.getElementById("video") as HTMLVideoElement;
-const overlay = document.getElementById("overlay") as HTMLCanvasElement;
-const simCanvas = document.getElementById("sim") as HTMLCanvasElement;
-const hud = document.getElementById("hud") as HTMLDivElement;
-const landing = document.getElementById("landing") as HTMLDivElement;
-const landingStatus = document.getElementById("landing-status") as HTMLParagraphElement;
-const startBtn = document.getElementById("start") as HTMLButtonElement;
-const controlButtons = ["btn-calibrate", "btn-orientation", "btn-freeze", "btn-reset"]
-  .map((id) => document.getElementById(id) as HTMLButtonElement);
+const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
+const video = $<HTMLVideoElement>("video");
+const overlay = $<HTMLCanvasElement>("overlay");
+const simCanvas = $<HTMLCanvasElement>("sim");
+const hud = $<HTMLDivElement>("hud");
+const landing = $<HTMLDivElement>("landing");
+const landingStatus = $<HTMLParagraphElement>("landing-status");
+const landingProgress = $<HTMLProgressElement>("landing-progress");
+const startBtn = $<HTMLButtonElement>("start");
+const autopilotBtn = $<HTMLButtonElement>("btn-autopilot");
+const camPlaceholder = $<HTMLDivElement>("cam-placeholder");
+const takeoverBtn = $<HTMLButtonElement>("btn-takeover");
+const takeoverStatus = $<HTMLParagraphElement>("takeover-status");
+const btnCal = $<HTMLButtonElement>("btn-calibrate");
+const btnOri = $<HTMLButtonElement>("btn-orientation");
+const btnFreeze = $<HTMLButtonElement>("btn-freeze");
+const btnReset = $<HTMLButtonElement>("btn-reset");
 
 class RollingMean {
   private buf: number[] = [];
@@ -33,52 +48,102 @@ const detectMs = new RollingMean();
 const tickMs = new RollingMean();
 const frameMs = new RollingMean();
 
-type Engine = { scene: ArmScene; tracker: HandTracker };
+// ---------------- engine loading ----------------
 
 /**
- * Heavy engine modules are loaded on demand (the landing shell stays a
- * small entry chunk) and created once, then reused across start()
- * retries: a second ArmScene would attach a second WebGLRenderer to the
- * same canvas and leak the Rapier world; a second HandLandmarker leaks
- * its predecessor.
+ * Heavy modules are loaded on demand (the landing shell stays a small
+ * entry chunk) and created once, then reused across sessions: a second
+ * ArmScene would attach a second WebGLRenderer to the same canvas and
+ * leak the Rapier world; a second HandLandmarker leaks its predecessor.
+ * The scene and the tracker load separately so the autopilot never pays
+ * for the ~20 MB of hand-tracking wasm + model it doesn't use.
  */
-let enginePromise: Promise<Engine> | null = null;
+let scenePromise: Promise<ArmScene> | null = null;
+let trackerPromise: Promise<HandTracker> | null = null;
+/** Whoever is currently showing a loading UI receives model progress. */
+let progressListener: ProgressFn | null = null;
 
-async function loadEngine(): Promise<Engine> {
-  const [{ ArmScene }, { HandTracker }] = await Promise.all([
-    import("./armScene"),
-    import("./handTracker"),
-  ]);
-  const [scene, tracker] = await Promise.all([
-    ArmScene.create(simCanvas),
-    HandTracker.create(),
-  ]);
-  return { scene, tracker };
+function loadScene(): Promise<ArmScene> {
+  scenePromise ??= import("./armScene")
+    .then(({ ArmScene }) => ArmScene.create(simCanvas))
+    .catch((e) => {
+      scenePromise = null; // allow a clean retry
+      throw e;
+    });
+  return scenePromise;
 }
 
-/** Tear the engine down so the next start() builds a fresh one. */
+function loadTracker(): Promise<HandTracker> {
+  trackerPromise ??= import("./handTracker")
+    .then(({ HandTracker }) => HandTracker.create((l, t) => progressListener?.(l, t)))
+    .catch((e) => {
+      trackerPromise = null;
+      throw e;
+    });
+  return trackerPromise;
+}
+
+/** Tear the engine down so the next start builds a fresh one. */
 function discardEngine(): void {
-  const p = enginePromise;
-  enginePromise = null;
-  p?.then((e) => {
-    e.scene.dispose();
-    e.tracker.close();
-  }).catch(() => {});
+  const s = scenePromise;
+  const t = trackerPromise;
+  scenePromise = null;
+  trackerPromise = null;
+  s?.then((scene) => scene.dispose()).catch(() => {});
+  t?.then((tracker) => tracker.close()).catch(() => {});
 }
+
+// ---------------- sessions ----------------
+
+type Session =
+  | { mode: "hand"; ctl: TeleopController; scene: ArmScene; stream: MediaStream }
+  | { mode: "autopilot"; ctl: TeleopController; scene: ArmScene; autopilot: Autopilot };
 
 /** The running session, if any — event handlers wired once refer to this. */
-let active: { ctl: TeleopController; scene: ArmScene } | null = null;
+let active: Session | null = null;
 
-/** Stop the camera and drop back to the landing card with a message. */
-function stopToLanding(stream: MediaStream | null, message: string): void {
+function endSession(): void {
+  if (active?.mode === "hand") active.stream.getTracks().forEach((t) => t.stop());
   active = null;
-  stream?.getTracks().forEach((t) => t.stop());
   video.srcObject = null;
-  landing.classList.remove("hidden");
-  landingStatus.textContent = message;
-  startBtn.disabled = false;
-  for (const b of controlButtons) b.disabled = true;
+  camPlaceholder.hidden = true;
+  takeoverStatus.textContent = "";
+  overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
 }
+
+/** Stop everything and drop back to the landing card with a message. */
+function stopToLanding(message: string): void {
+  endSession();
+  landing.classList.remove("hidden");
+  setLoading(message, null);
+  startBtn.disabled = false;
+  autopilotBtn.disabled = false;
+  for (const b of [btnCal, btnOri, btnFreeze, btnReset]) b.disabled = true;
+  btnFreeze.classList.remove("active");
+}
+
+function setLoading(text: string, frac: number | null): void {
+  landingStatus.textContent = text;
+  landingProgress.hidden = frac === null;
+  if (frac !== null) landingProgress.value = frac;
+}
+
+function enterSession(s: Session): void {
+  endSession();
+  active = s;
+  landing.classList.add("hidden");
+  setLoading("", null);
+  startBtn.disabled = false;
+  autopilotBtn.disabled = false;
+  camPlaceholder.hidden = s.mode !== "autopilot";
+  // Calibration and orientation only mean something with a hand.
+  btnCal.disabled = btnOri.disabled = s.mode !== "hand";
+  btnFreeze.disabled = btnReset.disabled = false;
+  btnFreeze.classList.remove("active");
+  btnOri.textContent = `Orientation: ${s.ctl.orientationOn ? "on" : "off"}`;
+}
+
+// ---------------- drawing ----------------
 
 /** Cap the backing store like the Three.js renderer does. */
 const dpr = (): number => Math.min(window.devicePixelRatio || 1, 2);
@@ -96,7 +161,9 @@ function sizeOverlay(panelW: number, panelH: number): void {
   if (overlay.height !== h) overlay.height = h;
 }
 
-const ACCENT = "#f27317";
+/** Skeleton keypoints use the page accent (style.css --accent). */
+const ACCENT =
+  getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#f27317";
 const SKELETON = "rgba(80, 200, 255, 0.9)";
 const SKELETON_FROZEN = "rgba(255, 92, 92, 0.9)";
 
@@ -170,35 +237,45 @@ function progressBar(frac: number, width = 10): string {
   return "▮".repeat(filled) + "▯".repeat(width - filled);
 }
 
-function updateHud(ctl: TeleopController, scene: ArmScene, handVisible: boolean): void {
+function updateHud(s: Session, handVisible: boolean): void {
+  const { ctl, scene } = s;
   const ik = ctl.lastIK;
   const fps = frameMs.mean() > 0 ? 1000 / frameMs.mean() : 0;
   const mode: Run = ctl.manualFreeze
     ? { t: "FROZEN (button)", c: "warn" }
-    : ctl.clutched
-      ? { t: "CLUTCHED (fist) — open your hand to resume", c: "warn" }
-      : { t: ctl.orientationOn ? "pos + orientation" : "position only" };
+    : s.mode === "autopilot"
+      ? { t: `AUTOPILOT — ${s.autopilot.status}`, c: "good" }
+      : ctl.clutched
+        ? { t: "CLUTCHED (fist) — open your hand to resume", c: "warn" }
+        : { t: ctl.orientationOn ? "pos + orientation" : "position only" };
   const grip: Run = ctl.gripLatched
     ? { t: "LATCHED", c: "warn" }
-    : ctl.gripping
+    : ctl.gripping || (s.mode === "autopilot" && ctl.gripOpening < 0.5)
       ? { t: "CLOSED", c: "warn" }
       : { t: "open" };
-  const lines: Run[][] = [
-    [{ t: `fps ${fps.toFixed(0).padStart(3)}   detect ${detectMs.mean().toFixed(1)} ms   tick ${tickMs.mean().toFixed(2)} ms` }],
-    [{ t: "mode: " }, mode],
-    [{ t: "hand: " }, handVisible ? { t: "tracking", c: "good" } : { t: "NOT FOUND", c: "warn" }],
-    [
-      { t: "grip: " }, grip, { t: `  aperture ${ctl.gripOpening.toFixed(2)}` },
-      ...(scene.holding ? [{ t: "  ● holding cube", c: "good" as const }] : []),
-    ],
-  ];
+  const timing = s.mode === "hand"
+    ? `fps ${fps.toFixed(0).padStart(3)}   detect ${detectMs.mean().toFixed(1)} ms   tick ${tickMs.mean().toFixed(2)} ms`
+    : `fps ${fps.toFixed(0).padStart(3)}   tick ${tickMs.mean().toFixed(2)} ms`;
+  const lines: Run[][] = [[{ t: timing }], [{ t: "mode: " }, mode]];
+  if (s.mode === "hand") {
+    lines.push([
+      { t: "hand: " },
+      handVisible ? { t: "tracking", c: "good" } : { t: "NOT FOUND", c: "warn" },
+    ]);
+  }
+  lines.push([
+    { t: "grip: " }, grip, { t: `  aperture ${ctl.gripOpening.toFixed(2)}` },
+    ...(scene.holding ? [{ t: "  ● holding cube", c: "good" as const }] : []),
+  ]);
   if (ik) {
     lines.push([
       { t: `ik: ${ik.iters} it  ${(ik.posErr * 1000).toFixed(1)} mm / ${((ik.oriErr * 180) / Math.PI).toFixed(1)} deg  w ${ik.manipulability.toFixed(3)}` },
       ...(ik.converged ? [] : [{ t: " (!)", c: "warn" as const }]),
     ]);
   }
-  if (!ctl.calibrated) {
+  if (s.mode === "autopilot") {
+    lines.push([{ t: "same IK + physics as hand control — enable the camera to take over", c: "muted" }]);
+  } else if (!ctl.calibrated) {
     lines.push([
       handVisible
         ? { t: `hold still to lock on  ${progressBar(ctl.calibProgress)}`, c: "warn" }
@@ -212,21 +289,99 @@ function updateHud(ctl: TeleopController, scene: ArmScene, handVisible: boolean)
   renderHud(lines);
 }
 
+// ---------------- the loop ----------------
+
+/**
+ * Drive one session at display rate. `frame` produces this tick's hand
+ * observation (null when none) after advancing the controller; the loop
+ * owns timing, drawing, the HUD, and crash handling.
+ */
+function runLoop(
+  s: Session,
+  frame: (dt: number, now: number) => HandObservation | null | "stop",
+): void {
+  let tPrev = performance.now();
+  const loop = (): void => {
+    // Any uncaught throw here (GPU context loss, wasm fault) would
+    // otherwise kill the rAF chain silently with the camera still live.
+    try {
+      if (active !== s) return; // superseded by another session
+      const now = performance.now();
+      frameMs.push(now - tPrev); // frame interval -> real display fps
+      const dt = Math.min((now - tPrev) / 1000, 0.1);
+      tPrev = now;
+
+      const obs = frame(dt, now);
+      if (obs === "stop") return;
+
+      const camPanel = video.parentElement!;
+      sizeOverlay(camPanel.clientWidth, camPanel.clientHeight);
+      if (obs) drawSkeleton(obs.imageLandmarks, s.ctl.frozen);
+      else overlay.getContext("2d")!.clearRect(0, 0, overlay.width, overlay.height);
+
+      const simPanel = simCanvas.parentElement!;
+      s.scene.render(simPanel.clientWidth, simPanel.clientHeight);
+
+      updateHud(s, obs !== null);
+      requestAnimationFrame(loop);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // A lost GPU context never comes back for this renderer; rebuild
+      // the engine on the next start instead of reusing a dead one.
+      if (/context lost/i.test(msg)) discardEngine();
+      stopToLanding(`The session crashed (${msg}). Start again to retry.`);
+    }
+  };
+  requestAnimationFrame(loop);
+}
+
 /** Treat the hand as lost if the camera stops delivering frames this long. */
 const STALLED_FRAME_MS = 1500;
+/** Rest with the cubes in the tray before the autopilot loops. */
+const ROUND_DONE_PAUSE_MS = 2500;
 
+function startupError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (err instanceof DOMException && err.name === "NotAllowedError") {
+    return "Camera access was denied — enable it in your browser's site settings and try again.";
+  }
+  if (err instanceof DOMException && err.name === "NotFoundError") {
+    return "No camera found. Plug one in (or allow camera access) and try again.";
+  }
+  if (/WebGL/i.test(msg)) {
+    return "This browser has no WebGL support (required for the 3D simulation). Try Chrome, Edge, or Safari with hardware acceleration enabled.";
+  }
+  return `Failed to start: ${msg}`;
+}
+
+const mb = (bytes: number): string => (bytes / 1e6).toFixed(1);
+
+/** Camera-driven session. Can take over from a running autopilot. */
 async function start(): Promise<void> {
   startBtn.disabled = true;
+  takeoverBtn.disabled = true;
+  const fromAutopilot = active?.mode === "autopilot";
+  // While the autopilot keeps running, report progress in its panel.
+  const status = (text: string, frac: number | null): void => {
+    if (fromAutopilot) takeoverStatus.textContent = text;
+    else setLoading(text, frac);
+  };
   let stream: MediaStream | null = null;
   try {
-    landingStatus.textContent = "Loading physics + hand tracking models…";
-    enginePromise ??= loadEngine();
-    const { scene, tracker } = await enginePromise.catch((e) => {
-      enginePromise = null; // engine init failed — allow a clean retry
-      throw e;
-    });
+    status("Loading 3D engine…", null);
+    const scene = await loadScene();
+    status("Loading hand tracker…", null);
+    progressListener = (loaded, total) =>
+      status(
+        total
+          ? `Downloading hand model  ${mb(loaded)} / ${mb(total)} MB`
+          : `Downloading hand model  ${mb(loaded)} MB`,
+        total ? loaded / total : null,
+      );
+    const tracker = await loadTracker();
+    progressListener = null;
 
-    landingStatus.textContent = "Requesting camera…";
+    status("Requesting camera…", null);
     stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
       audio: false,
@@ -247,16 +402,14 @@ async function start(): Promise<void> {
       cameraLost = true;
     });
 
+    if (fromAutopilot) scene.reset(); // hand the operator a fresh scene
     const ctl = new TeleopController(scene);
     ctl.frameAspect = video.videoWidth / video.videoHeight;
-    active = { ctl, scene };
-    landing.classList.add("hidden");
-    landingStatus.textContent = "";
-    for (const b of controlButtons) b.disabled = false; // session is live
+    const s: Session = { mode: "hand", ctl, scene, stream };
+    enterSession(s);
 
     let lastObs: HandObservation | null = null;
     let lastFrameAt = performance.now();
-    let tPrev = performance.now();
 
     // New-frame detection: requestVideoFrameCallback fires exactly once
     // per delivered camera frame where supported; elsewhere fall back to
@@ -266,93 +419,108 @@ async function start(): Promise<void> {
     const hasRvfc = typeof video.requestVideoFrameCallback === "function";
     const onVideoFrame = (): void => {
       newFrame = true;
-      if (active?.ctl === ctl) video.requestVideoFrameCallback(onVideoFrame);
+      if (active === s) video.requestVideoFrameCallback(onVideoFrame);
     };
     if (hasRvfc) video.requestVideoFrameCallback(onVideoFrame);
 
-    const loop = (): void => {
-      // Any uncaught throw here (GPU context loss, wasm fault) would
-      // otherwise kill the rAF chain silently with the camera still live.
-      try {
-        if (active?.ctl !== ctl) return; // superseded by a restart
-        const now = performance.now();
-        frameMs.push(now - tPrev); // frame interval -> real display fps
-        const dt = Math.min((now - tPrev) / 1000, 0.1);
-        tPrev = now;
-
-        if (cameraLost) {
-          stopToLanding(stream, "Camera disconnected — start again to reconnect.");
-          return;
-        }
-
-        if (!hasRvfc && video.currentTime !== lastVideoTime) {
-          lastVideoTime = video.currentTime;
-          newFrame = true;
-        }
-        // Detect only on new video frames; reuse the last observation between.
-        if (newFrame && video.readyState >= 2) {
-          newFrame = false;
-          lastFrameAt = now;
-          const t0 = performance.now();
-          lastObs = tracker.detect(video, now);
-          detectMs.push(performance.now() - t0);
-        } else if (now - lastFrameAt > STALLED_FRAME_MS) {
-          // No fresh frames: without this, a stalled camera keeps feeding the
-          // arm the last observation forever and the hold failsafe never fires.
-          lastObs = null;
-        }
-
-        const t1 = performance.now();
-        ctl.tick(lastObs, dt);
-        tickMs.push(performance.now() - t1);
-
-        const camPanel = video.parentElement!;
-        sizeOverlay(camPanel.clientWidth, camPanel.clientHeight);
-        if (lastObs) drawSkeleton(lastObs.imageLandmarks, ctl.frozen);
-        else overlay.getContext("2d")!.clearRect(0, 0, overlay.width, overlay.height);
-
-        const simPanel = simCanvas.parentElement!;
-        scene.render(simPanel.clientWidth, simPanel.clientHeight);
-
-        updateHud(ctl, scene, lastObs !== null);
-        requestAnimationFrame(loop);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // A lost GPU context never comes back for this renderer; rebuild
-        // the engine on the next start instead of reusing a dead one.
-        if (/context lost/i.test(msg)) discardEngine();
-        stopToLanding(stream, `The session crashed (${msg}). Start again to retry.`);
+    runLoop(s, (dt, now) => {
+      if (cameraLost) {
+        stopToLanding("Camera disconnected — start again to reconnect.");
+        return "stop";
       }
-    };
-    requestAnimationFrame(loop);
+      if (!hasRvfc && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        newFrame = true;
+      }
+      // Detect only on new video frames; reuse the last observation between.
+      if (newFrame && video.readyState >= 2) {
+        newFrame = false;
+        lastFrameAt = now;
+        const t0 = performance.now();
+        lastObs = tracker.detect(video, now);
+        detectMs.push(performance.now() - t0);
+      } else if (now - lastFrameAt > STALLED_FRAME_MS) {
+        // No fresh frames: without this, a stalled camera keeps feeding the
+        // arm the last observation forever and the hold failsafe never fires.
+        lastObs = null;
+      }
+      const t1 = performance.now();
+      ctl.tick(lastObs, dt);
+      tickMs.push(performance.now() - t1);
+      return lastObs;
+    });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    progressListener = null;
     // Release the camera on any failure, or the indicator light stays on
     // (and a retry would acquire a second stream) while the app looks dead.
-    stopToLanding(
-      stream,
-      err instanceof DOMException && err.name === "NotAllowedError"
-        ? "Camera access was denied — enable it in your browser's site settings and try again."
-        : err instanceof DOMException && err.name === "NotFoundError"
-          ? "No camera found. Plug one in (or allow camera access) and try again."
-          : /WebGL/i.test(msg)
-            ? "This browser has no WebGL support (required for the 3D simulation). Try Chrome, Edge, or Safari with hardware acceleration enabled."
-            : `Failed to start: ${msg}`,
-    );
+    stream?.getTracks().forEach((t) => t.stop());
+    if (active?.mode === "autopilot") {
+      // Keep the show running; report the problem where the button is.
+      takeoverStatus.textContent = startupError(err);
+      startBtn.disabled = false;
+    } else {
+      stopToLanding(startupError(err));
+    }
+  } finally {
+    takeoverBtn.disabled = false;
   }
+}
+
+/** Scripted pick-and-place, no camera. */
+async function startAutopilot(): Promise<void> {
+  autopilotBtn.disabled = true;
+  try {
+    setLoading("Loading 3D engine…", null);
+    const [scene, { Autopilot }] = await Promise.all([loadScene(), import("./autopilot")]);
+    scene.reset();
+    const ctl = new TeleopController(scene);
+    const autopilot = new Autopilot(ctl, scene);
+    const s: Session = { mode: "autopilot", ctl, scene, autopilot };
+    enterSession(s);
+
+    let doneAt: number | null = null;
+    runLoop(s, (dt, now) => {
+      const t1 = performance.now();
+      autopilot.tick(dt);
+      tickMs.push(performance.now() - t1);
+      if (autopilot.roundComplete) {
+        doneAt ??= now;
+        if (now - doneAt > ROUND_DONE_PAUSE_MS) {
+          doneAt = null;
+          resetScene();
+        }
+      }
+      return null;
+    });
+  } catch (err) {
+    stopToLanding(startupError(err));
+  }
+}
+
+// ---------------- controls ----------------
+
+function resetScene(): void {
+  if (!active) return;
+  const { ctl, scene } = active;
+  scene.reset();
+  ctl.resetControl();
+  // Push the reset state to the scene immediately: while the lost-hand
+  // hold is active the controller stops commanding, and without this the
+  // cubes teleport home but the arm keeps its stale pose and grip.
+  scene.setJointTargets(ctl.qCmd);
+  scene.setGripper(ctl.gripOpening);
+  scene.setTargetMarker(ctl.targetPos);
+  if (active.mode === "autopilot") active.autopilot.restart();
+  btnFreeze.classList.remove("active");
 }
 
 /**
  * Wired once at module load; handlers act on the current session via
- * `active`, so a camera-lost restart doesn't stack duplicate listeners.
+ * `active`, so a restart doesn't stack duplicate listeners.
  */
 function wireControls(): void {
-  const btnCal = document.getElementById("btn-calibrate") as HTMLButtonElement;
-  const btnOri = document.getElementById("btn-orientation") as HTMLButtonElement;
-  const btnFreeze = document.getElementById("btn-freeze") as HTMLButtonElement;
-  const btnReset = document.getElementById("btn-reset") as HTMLButtonElement;
   const toggleOrientation = (): void => {
-    if (!active) return;
+    if (active?.mode !== "hand") return;
     active.ctl.orientationOn = !active.ctl.orientationOn;
     btnOri.textContent = `Orientation: ${active.ctl.orientationOn ? "on" : "off"}`;
   };
@@ -361,21 +529,8 @@ function wireControls(): void {
     active.ctl.manualFreeze = !active.ctl.manualFreeze;
     btnFreeze.classList.toggle("active", active.ctl.manualFreeze);
   };
-  const resetScene = (): void => {
-    if (!active) return;
-    const { ctl, scene } = active;
-    scene.reset();
-    ctl.resetControl();
-    // Push the reset state to the scene immediately: while the lost-hand
-    // hold is active the controller stops commanding, and without this the
-    // cubes teleport home but the arm keeps its stale pose and grip.
-    scene.setJointTargets(ctl.qCmd);
-    scene.setGripper(ctl.gripOpening);
-    scene.setTargetMarker(ctl.targetPos);
-    btnFreeze.classList.remove("active");
-  };
   const recalibrate = (): void => {
-    active?.ctl.requestCalibration();
+    if (active?.mode === "hand") active.ctl.requestCalibration();
   };
 
   btnCal.addEventListener("click", recalibrate);
@@ -395,11 +550,28 @@ function wireControls(): void {
   // Track resolution changes (device rotation, browser downgrading the
   // stream) or the aspect correction silently corrupts the depth axis.
   video.addEventListener("resize", () => {
-    if (active && video.videoHeight > 0) {
+    if (active?.mode === "hand" && video.videoHeight > 0) {
       active.ctl.frameAspect = video.videoWidth / video.videoHeight;
     }
   });
+
+  startBtn.addEventListener("click", () => void start());
+  takeoverBtn.addEventListener("click", () => void start());
+  autopilotBtn.addEventListener("click", () => void startAutopilot());
+
+  // Intent-based prefetch: hovering or focusing a start button is a good
+  // sign the ~30 MB engine download is about to be wanted, and starting
+  // it now makes the click feel instant without loading it for visitors
+  // who only came to read.
+  const prefetch = (btn: HTMLElement, load: () => Promise<unknown>): void => {
+    const once = (): void => {
+      load().catch(() => {}); // the click path reports errors
+    };
+    btn.addEventListener("pointerenter", once, { once: true });
+    btn.addEventListener("focus", once, { once: true });
+  };
+  prefetch(startBtn, () => Promise.all([loadScene(), loadTracker()]));
+  prefetch(autopilotBtn, loadScene);
 }
 
 wireControls();
-startBtn.addEventListener("click", () => void start());

@@ -243,6 +243,17 @@ export class TeleopController {
     this.scene.setTargetMarker(this.targetPos);
   }
 
+  /**
+   * One control tick with the targets already set by a script (the
+   * autopilot): same IK -> rate-limited command -> physics path as a hand
+   * frame, minus gesture processing. A manual freeze holds the arm.
+   */
+  tickScripted(dt: number): void {
+    this.lastObs = null;
+    if (!this.frozen) this.solveAndCommand(dt);
+    this.scene.step(dt);
+  }
+
   /** One control tick, as the render loop calls it. */
   tick(obs: HandObservation | null, dt: number): void {
     this.lastObs = obs;

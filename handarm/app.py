@@ -34,6 +34,7 @@ from .filters import OneEuroFilter, QuaternionLowPass, ScalarLowPass
 from .ik import DLSSolver
 from .kinematics import ArmKinematics
 from .latency import LatencyProfiler
+from .autopilot import Autopilot, SimPlant
 from .mapping import TOOL_DOWN_QUAT, HandToRobotMapper
 from .overlay import compose_split, draw_gripper_bar, draw_hand_skeleton, draw_hud
 from .recorder import Recorder, load_recording
@@ -361,6 +362,14 @@ class TeleopApp:
         if not hold:
             self.solve_and_command(dt)
 
+    def tick_scripted(self, dt: float) -> None:
+        """One control tick with the targets already set by a script (the
+        autopilot): the same IK -> rate-limited command path as a hand
+        frame, minus gesture processing. A manual freeze holds the arm."""
+        self.last_obs = None
+        if not self.frozen:
+            self.solve_and_command(dt)
+
     def handle_key(self, key: int) -> bool:
         if key in (ord("q"), 27):
             return False
@@ -380,6 +389,44 @@ class TeleopApp:
             else:
                 print(f"recording to: {self.recorder.start()}")
         return True
+
+    def run_autopilot(self) -> None:
+        """Scripted pick-and-place with no camera: the arm picks each cube
+        and drops it in the tray through the live IK -> physics path,
+        looping after a rest. Keys: q quits, x resets, f freezes."""
+        pilot = Autopilot(self, SimPlant(self.sim, self.kin))
+        t_prev = time.perf_counter()
+        done_at = None
+        while True:
+            now = time.perf_counter()
+            dt, t_prev = min(now - t_prev, 0.1), now
+            pilot.tick(dt)
+            self.sim.step(dt)
+            if pilot.round_complete:
+                done_at = done_at or now
+                if now - done_at > 2.5:
+                    done_at = None
+                    self.sim.reset()
+                    self.reset_control()
+                    pilot.restart()
+
+            view = cv2.cvtColor(self.sim.render(), cv2.COLOR_RGB2BGR)
+            hud = f"AUTOPILOT  {pilot.status}"
+            if self._manual_freeze:
+                hud = "FROZEN (f)"
+            cv2.putText(view, hud, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (60, 220, 120), 2, cv2.LINE_AA)
+            cv2.imshow(WINDOW, view)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord("f"):
+                self.manual_freeze = not self.manual_freeze
+            elif key == ord("x"):
+                self.sim.reset()
+                self.reset_control()
+                pilot.restart()
+        cv2.destroyAllWindows()
 
     def replay(self, path: Path) -> None:
         """Play a recorded joint trajectory back into the simulation."""

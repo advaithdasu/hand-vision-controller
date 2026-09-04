@@ -187,8 +187,57 @@ button:focus-visible {
   background: #2e241a;
 }
 
+.landing-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+button.secondary {
+  background: #262a31;
+  color: var(--text);
+  border: 1px solid #3a3f48;
+}
+
 #landing-status {
   color: var(--muted);
+  min-height: 1.2em;
+}
+
+/* id selectors outrank the UA [hidden] rule, so restate it for these. */
+#landing-progress[hidden],
+#cam-placeholder[hidden] {
+  display: none;
+}
+
+#landing-progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+}
+
+/* Shown in the camera panel while the autopilot drives. */
+#cam-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+#cam-placeholder p {
+  margin: 0;
+}
+
+#takeover-status {
+  font-size: 0.85rem;
   min-height: 1.2em;
 }
 

@@ -33,28 +33,23 @@
 **Effort:** M
 **Priority:** P3
 
-### Single source of truth for the accent color
-
-**What:** Derive the `#f27317` accent used in `style.css`, `armScene.ts` (`COLORS.orange`), and `main.ts` (`ACCENT`) from one definition.
-
-**Why:** A rebrand currently requires three synchronized edits in two formats.
-
-**Effort:** S
-**Priority:** P4
-
 ## Python App
 
 ### Replay recordings in the browser
 
 **What:** Accept a `recordings/*.jsonl` file (drag-and-drop) in the browser demo and play the joint trajectory back on the Three.js arm.
 
-**Why:** Lets the portfolio page show a canned manipulation for visitors without a webcam.
+**Why:** Would let a human demonstration, not just the scripted autopilot, play for visitors without a webcam.
+
+**Context:** The autopilot (v0.3.0.0) covers the "show something moving without a camera" need; this is now about showing *human* demonstrations.
 
 **Effort:** M
-**Priority:** P3
+**Priority:** P4
 
 ## Completed
 
+- **Autopilot for visitors without a camera** (v0.3.0.0): scripted pick-and-place through the live controller/IK/physics path, in both the browser and Python; superseded the "canned manipulation" motivation of the replay item.
+- **Single source of truth for the accent color** (v0.3.0.0): `style.css --accent` is read by the overlay and the Three.js scene.
 - **Rebase the clutch instead of using absolute mapping** (v0.2.0.0): position and orientation maps are re-anchored on fist release, manual unfreeze, and orientation re-enable.
 - **Distinguish a thumb-tucked fist from a pinch** (v0.2.0.0): fist detection ignores the thumb; the clutch and gripper are debounced.
 - **Calibration quality gate** (v0.2.0.0): hold-still auto-calibration with HUD progress; the Calibrate button acts immediately.

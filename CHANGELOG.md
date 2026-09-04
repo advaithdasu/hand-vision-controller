@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0.0] - 2026-09-04
+
+Autopilot release: the demo works for visitors with no camera, and the
+first-visit download shows real progress.
+
+### Added
+- Autopilot ("Watch it run" in the browser, `python -m handarm --autopilot`
+  in Python): a scripted pick-and-place that moves both cubes into the tray
+  through the same controller, warm-started DLS IK, joint-rate limiting,
+  and physics the hand drives. Orientation and aperture are eased along
+  with position, a grasp that doesn't take is retried up to three times
+  from the cube's current spot, the round loops after a rest, Freeze
+  pauses it, Reset restarts it, and "Enable camera & take over" switches
+  to live control mid-run without reloading the engine.
+- Browser demo: the hand-landmarker model is fetched with byte-level
+  progress (a bar on the landing card), loading is staged ("3D engine",
+  "hand tracker", "camera"), and hovering or focusing a start button
+  prefetches the engine so the click feels instant.
+- Tests: autopilot on both sides (waypoint reachability, both cubes placed,
+  bounded retries, freeze pauses, restart after reset), including a MuJoCo
+  run with a physical friction grasp (71 Python, 60 vitest).
+
+### Changed
+- Browser demo: the scene and the hand tracker load independently, so the
+  autopilot never downloads the ~20 MB of hand-tracking wasm and model.
+- Browser demo: the accent color is defined once in `style.css`; the
+  skeleton overlay and the arm's orange links read it from there.
+
 ## [0.2.0.0] - 2026-09-03
 
 Control-quality release: the arm tracks the hand with less lag and fewer

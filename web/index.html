@@ -38,6 +38,11 @@
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
         <div id="hud"></div>
+        <div id="cam-placeholder" hidden>
+          <p>Autopilot is driving — no camera in use.</p>
+          <button id="btn-takeover">Enable camera &amp; take over</button>
+          <p id="takeover-status"></p>
+        </div>
       </div>
       <div class="panel" id="sim-panel">
         <canvas id="sim"></canvas>
@@ -52,8 +57,12 @@
             <li><b>Tilt your palm</b> — the wrist follows</li>
             <li><b>Fist</b> — clutch: the arm freezes, move your hand somewhere comfortable, open it to resume from where the arm stopped</li>
           </ul>
-          <button id="start">Enable camera &amp; start</button>
+          <div class="landing-actions">
+            <button id="start">Enable camera &amp; start</button>
+            <button id="btn-autopilot" class="secondary" title="Scripted pick-and-place through the same IK and physics, no camera needed">Watch it run (no camera)</button>
+          </div>
           <p id="landing-status"></p>
+          <progress id="landing-progress" max="1" value="0" hidden></progress>
         </div>
       </div>
     </div>

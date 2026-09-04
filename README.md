@@ -53,7 +53,9 @@ pnpm install
 pnpm dev   # open the printed localhost URL, click "Enable camera & start"
 ```
 
-`web/` is a TypeScript port of the math core (FK, damped-least-squares IK, camera→robot mapping, One Euro filtering, pose features) with Three.js rendering and Rapier physics standing in for MuJoCo. Gestures work the same as below; keyboard shortcuts are `c` (calibrate), `o` (orientation toggle), `f` (freeze), `x` (reset scene). Cubes glow when the open gripper is within grasp range, and a floor ring under the tool gives a depth cue. `pnpm test` runs the vitest suite mirroring the Python tests; `pnpm build` type-checks and produces a static bundle (an 8 kB landing shell; the engine loads when you press start).
+`web/` is a TypeScript port of the math core (FK, damped-least-squares IK, camera→robot mapping, One Euro filtering, pose features) with Three.js rendering and Rapier physics standing in for MuJoCo. Gestures work the same as below; keyboard shortcuts are `c` (calibrate), `o` (orientation toggle), `f` (freeze), `x` (reset scene). Cubes glow when the open gripper is within grasp range, and a floor ring under the tool gives a depth cue. `pnpm test` runs the vitest suite mirroring the Python tests; `pnpm build` type-checks and produces a static bundle (a 9 kB landing shell; the engine loads when you press start, with a download progress bar for the hand model).
+
+**No camera? Press "Watch it run".** An autopilot picks up each cube and drops it in the tray through the very same controller, IK solver, and physics the hand drives — it just feeds scripted Cartesian targets instead of a palm. The hand-tracking model isn't downloaded in this mode. "Enable camera & take over" switches to live control mid-run. The Python app has the same thing: `python -m handarm --autopilot`, where the grasp is a real friction contact in MuJoCo.
 
 The page ships a same-origin Content-Security-Policy, so the "video never leaves your machine" claim is enforced by the browser, not just promised. `pnpm build` writes a fully static `web/dist` that any static host can serve; set `BASE_PATH=/<subpath>/` only if you serve it from a subdirectory.
 
@@ -79,7 +81,7 @@ One deliberate difference from the Python app: the browser mapping is **view-con
 | `x` | Reset the scene |
 | `q` / Esc | Quit |
 
-Record a manipulation with `r`, then replay it: `python -m handarm --replay recordings/demo-<stamp>.jsonl` — a preview of learning-from-demonstration workflows.
+Record a manipulation with `r`, then replay it: `python -m handarm --replay recordings/demo-<stamp>.jsonl` — a preview of learning-from-demonstration workflows. `python -m handarm --autopilot` runs the scripted pick-and-place with no camera (`f` freezes, `x` resets, `q` quits).
 
 ## The interesting part: the IK solver
 
@@ -109,7 +111,7 @@ End-to-end motion-to-motion latency is dominated by camera exposure + detection;
 python -m pytest tests/ -q
 ```
 
-The suite (68 Python tests, 53 vitest) covers the quaternion math, filters, gesture geometry (including a thumb-tucked fist and tilt-invariant depth), camera-to-robot mapping and clutch rebasing, IK accuracy / joint limits / singularity behavior / smooth tracking, the controller state machine (calibration gate, debounce, clutch resume, tracking lag on a fast sweep), sim actuation, and a full headless **pick-and-place integration test** that grasps a cube, lifts it, transports it, and releases it through the same code path the live loop uses. `.github/workflows/ci.yml` runs both suites on every push.
+The suite (71 Python tests, 60 vitest) covers the quaternion math, filters, gesture geometry (including a thumb-tucked fist and tilt-invariant depth), camera-to-robot mapping and clutch rebasing, IK accuracy / joint limits / singularity behavior / smooth tracking, the controller state machine (calibration gate, debounce, clutch resume, tracking lag on a fast sweep), sim actuation, a full headless **pick-and-place integration test** that grasps a cube, lifts it, transports it, and releases it through the same code path the live loop uses, and the **autopilot** end to end on both sides (every waypoint reachable, both cubes land in the tray, bounded grasp retries, freeze pauses the script). `.github/workflows/ci.yml` runs both suites on every push.
 
 ## From simulation to hardware
 
@@ -119,7 +121,8 @@ The architecture keeps the perception → mapping → IK stack independent of th
 
 ```
 handarm/
-  app.py            real-time loop, HUD, record/replay
+  app.py            real-time loop, HUD, record/replay, autopilot loop
+  autopilot.py      scripted pick-and-place (no camera), shared with web/
   hand_tracker.py   MediaPipe HandLandmarker wrapper
   pose_features.py  palm frame, pinch, finger curl (pure numpy)
   mapping.py        camera-space → robot-space, calibration

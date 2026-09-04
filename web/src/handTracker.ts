@@ -15,16 +15,59 @@ export interface HandObservation {
   worldLandmarks: Landmarks; // meters, hand-centered, mirrored
 }
 
+/** Download progress callback: bytes so far and the total, if known. */
+export type ProgressFn = (loaded: number, total: number | null) => void;
+
+/**
+ * Fetch the model with byte-level progress so the landing card can show
+ * a real bar during the ~8 MB first-visit download instead of a static
+ * "loading…" line. Falls back to a plain download when the body stream
+ * or Content-Length is unavailable.
+ */
+async function fetchWithProgress(url: string, onProgress?: ProgressFn): Promise<Uint8Array> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: HTTP ${res.status}`);
+  const len = Number(res.headers.get("Content-Length"));
+  const total = Number.isFinite(len) && len > 0 ? len : null;
+  if (!res.body || !onProgress) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    onProgress?.(buf.byteLength, buf.byteLength);
+    return buf;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+  const out = new Uint8Array(loaded);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+}
+
 export class HandTracker {
   private constructor(private landmarker: HandLandmarker) {}
 
-  static async create(): Promise<HandTracker> {
-    const fileset = await FilesetResolver.forVisionTasks(
-      import.meta.env.BASE_URL + "mediapipe/wasm",
-    );
+  static async create(onProgress?: ProgressFn): Promise<HandTracker> {
+    // The wasm runtime and the model download in parallel; MediaPipe
+    // loads the wasm itself, so only the model reports byte progress.
+    const [fileset, modelAssetBuffer] = await Promise.all([
+      FilesetResolver.forVisionTasks(import.meta.env.BASE_URL + "mediapipe/wasm"),
+      fetchWithProgress(import.meta.env.BASE_URL + "models/hand_landmarker.task", onProgress),
+    ]);
     const options = (delegate: "GPU" | "CPU") => ({
       baseOptions: {
-        modelAssetPath: import.meta.env.BASE_URL + "models/hand_landmarker.task",
+        // A fresh copy per attempt: MediaPipe may detach the buffer it is
+        // handed, and the CPU fallback needs an intact one.
+        modelAssetBuffer: modelAssetBuffer.slice(),
         delegate,
       },
       runningMode: "VIDEO" as const,

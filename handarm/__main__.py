@@ -21,6 +21,8 @@ def main() -> None:
                         help="do not mirror the webcam image")
     parser.add_argument("--replay", type=Path, metavar="FILE",
                         help="replay a recorded .jsonl trajectory instead of live control")
+    parser.add_argument("--autopilot", action="store_true",
+                        help="scripted pick-and-place demo, no camera needed")
     args = parser.parse_args()
 
     cfg = AppConfig(
@@ -31,6 +33,8 @@ def main() -> None:
     app = TeleopApp(cfg)
     if args.replay:
         app.replay(args.replay)
+    elif args.autopilot:
+        app.run_autopilot()
     else:
         app.run()
 
