@@ -65,6 +65,15 @@ h1 {
   border: 1px solid #262a31;
 }
 
+#stage:has(#landing:not(.hidden)) .panel {
+  background: transparent;
+  border-color: transparent;
+}
+
+#stage:has(#landing:not(.hidden)) #hud {
+  display: none;
+}
+
 #video {
   position: absolute;
   inset: 0;
@@ -138,6 +147,13 @@ h1 {
 
 #landing-card b {
   color: var(--text);
+}
+
+#landing-card .landing-tips {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 button {
