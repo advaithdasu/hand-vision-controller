@@ -121,7 +121,6 @@ function endSession(next?: Session): void {
   overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
 }
 
-/** Stop everything and drop back to the landing card with a message. */
 function stopToLanding(message: string): void {
   endSession();
   landing.classList.remove("hidden");
@@ -442,7 +441,6 @@ async function start(): Promise<void> {
         lastVideoTime = video.currentTime;
         newFrame = true;
       }
-      // Detect only on new video frames; reuse the last observation between.
       if (newFrame && video.readyState >= 2) {
         newFrame = false;
         lastFrameAt = now;
