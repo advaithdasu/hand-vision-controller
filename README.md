@@ -59,14 +59,14 @@ pnpm dev   # open the printed localhost URL, click "Enable camera & start"
 
 The page ships a same-origin Content-Security-Policy, so the "video never leaves your machine" claim is enforced by the browser, not just promised. `pnpm build` writes a fully static `web/dist` that any static host can serve; set `BASE_PATH=/<subpath>/` only if you serve it from a subdirectory.
 
-One deliberate difference from the Python app: the browser mapping is **view-consistent with the mirrored camera preview** — move your hand right and the arm moves screen-right, and wrist roll/yaw follow the same on-screen sense. `web/src/mapping.ts` uses an intentionally improper (det = −1) camera→robot axis map to get this; `handarm/mapping.py` keeps the opposite convention because the MuJoCo viewer sits on the other side of the scene.
+Two deliberate differences from the Python app. The browser mapping is **view-consistent with the mirrored camera preview** — move your hand right and the arm moves screen-right, and wrist roll/yaw follow the same on-screen sense. `web/src/mapping.ts` uses an intentionally improper (det = −1) camera→robot axis map to get this; `handarm/mapping.py` keeps the opposite convention because the MuJoCo viewer sits on the other side of the scene. The browser also treats the operator's forward as the robot's forward: reaching toward the camera **extends** the arm, where `handarm/mapping.py` retracts it. The mirrored sense is the one first-time visitors fight, and in the browser scene the arm's camera sits out front, so an extending tool looms larger on screen just as the hand does in the preview.
 
 ## Controls
 
 | Gesture | Action |
 |---|---|
 | Move hand left/right/up/down | End effector follows in the arm's y/z plane |
-| Move hand toward/away from camera | Arm retracts / extends (depth from hand's apparent size) |
+| Move hand toward/away from camera | Arm reaches out / pulls back (depth from hand's apparent size) |
 | Tilt/rotate palm | End-effector orientation follows (relative to calibration) |
 | Pinch (thumb + index) | Close gripper — aperture tracks the pinch distance |
 | Fist (thumb tucked or not) | Clutch: freezes arm **and gripper** so you can move your hand somewhere comfortable |

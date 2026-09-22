@@ -108,3 +108,31 @@ export class ScalarLowPass {
     return this.y;
   }
 }
+
+/**
+ * Dead zone that travels with the signal (a backlash / slop filter): the
+ * output holds until the input strays more than `slop` from it, then
+ * follows at that distance. Unlike a fixed dead zone around a neutral
+ * value this suppresses small wobble anywhere in the range, which is
+ * what an axis that picks up unintended cross-coupling needs; the cost
+ * is `slop` of lag, and twice that to reverse direction.
+ */
+export class SlopFilter {
+  private y: number | null = null;
+
+  constructor(private slop = 0) {}
+
+  reset(): void {
+    this.y = null;
+  }
+
+  apply(x: number): number {
+    if (this.y === null) {
+      this.y = x;
+      return x;
+    }
+    if (x > this.y + this.slop) this.y = x - this.slop;
+    else if (x < this.y - this.slop) this.y = x + this.slop;
+    return this.y;
+  }
+}

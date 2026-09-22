@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { type ArmPlant, TeleopController } from "../src/app";
-import { CONTROL } from "../src/config";
+import { CONTROL, MAPPING } from "../src/config";
 import { type HandObservation } from "../src/handTracker";
 import { fk } from "../src/kinematics";
 import { type Landmarks } from "../src/poseFeatures";
+import { TOOL_DOWN_QUAT } from "../src/mapping";
 import { matVec3, quatAngleBetween, rotX, type Vec3, vecNorm, vecSub } from "../src/transforms";
 import {
+  projectPinhole,
   syntheticFist,
   syntheticOpenHand,
   syntheticPinch,
@@ -60,6 +62,59 @@ function settle(ctl: TeleopController): void {
   run(ctl, obsAt([0.5, 0.5]), 0.8);
   expect(ctl.calibrated).toBe(true);
 }
+
+describe("axis decoupling", () => {
+  /**
+   * The operator's complaint: a hand raised straight up also pushed the
+   * arm in or out. A tilted palm projects differently depending on
+   * where in the frame it is, so the apparent-size depth cue moved when
+   * only the height had changed.
+   */
+  it("holds depth while the hand moves straight up", () => {
+    const aspect = 16 / 9;
+    const depth = 0.55;
+    const ctl = new TeleopController(stubScene());
+    ctl.frameAspect = aspect;
+    // A palm tilted toward the camera: the worst case for the cue.
+    const hand = syntheticOpenHand().map((p) => matVec3(rotX(0.5), p));
+    const at = (metresUp: number): HandObservation => ({
+      imageLandmarks: projectPinhole(hand, depth, aspect, [0, -metresUp]),
+      worldLandmarks: hand,
+    });
+
+    run(ctl, at(0), 1.0);
+    expect(ctl.calibrated).toBe(true);
+    const start = ctl.targetPos;
+
+    run(ctl, at(0.06), 2.0); // 6 cm straight up, nothing else
+    expect(ctl.targetPos[2] - start[2]).toBeGreaterThan(0.1); // the arm rose
+    expect(Math.abs(ctl.targetPos[1] - start[1])).toBeLessThan(0.005);
+    expect(Math.abs(ctl.targetPos[0] - start[0])).toBeLessThan(0.01);
+  });
+
+  it("still follows a deliberate push toward the camera", () => {
+    const aspect = 16 / 9;
+    const ctl = new TeleopController(stubScene());
+    ctl.frameAspect = aspect;
+    const hand = syntheticOpenHand();
+    const at = (depth: number): HandObservation => ({
+      imageLandmarks: projectPinhole(hand, depth, aspect),
+      worldLandmarks: hand,
+    });
+
+    run(ctl, at(0.55), 1.0);
+    const start = ctl.targetPos;
+    // 10% closer: a fifth of the depth window, well clear of the slop.
+    run(ctl, at(0.5), 3.0);
+    expect(ctl.targetPos[0] - start[0]).toBeGreaterThan(0.05);
+    // Not quite zero, and inherently so: the lateral cue is the palm's
+    // position in the image, and the palm sits a few centimetres from
+    // the hand centre the camera pivots it around, so approaching the
+    // lens slides it slightly across the frame. Roughly a centimetre of
+    // tool travel per 10% of depth — far below the arm's own motion.
+    expect(Math.abs(ctl.targetPos[2] - start[2])).toBeLessThan(0.02);
+  });
+});
 
 describe("gripper", () => {
   it("closes on pinch and reopens with hysteresis", () => {
@@ -148,6 +203,47 @@ describe("clutch", () => {
     expect(ctl.targetPos[1]).toBeGreaterThan(frozen[1] + 0.03);
   });
 
+  it("ignores where the hand went while tracking was lost", () => {
+    const ctl = make();
+    settle(ctl);
+    // Establish a non-trivial pose: off-centre, with the wrist tilted.
+    const tilted = syntheticOpenHand().map((p) => matVec3(rotX(0.5), p));
+    run(ctl, obsAt([0.4, 0.45], 2.0, tilted), 1.0);
+    const frozen: Vec3 = [...ctl.targetPos] as Vec3;
+    const qFrozen = ctl.targetQuat;
+    expect(quatAngleBetween(qFrozen, TOOL_DOWN_QUAT)).toBeGreaterThan(0.2);
+
+    // The hand leaves the frame for well past the hold threshold.
+    run(ctl, null, 1.0);
+    expect(ctl.targetPos).toEqual(frozen);
+
+    // It returns somewhere else entirely, closer in and tilted the
+    // other way. None of that travel happened while the arm was
+    // following, so none of it may move the arm.
+    const back = syntheticOpenHand().map((p) => matVec3(rotX(-0.4), p));
+    const away = ctl.mapper.mapPosition([0.75, 0.7], 2.5);
+    expect(vecNorm(vecSub(away, frozen))).toBeGreaterThan(0.15);
+    run(ctl, obsAt([0.75, 0.7], 2.5, back), 0.5);
+    expect(vecNorm(vecSub(ctl.targetPos, frozen))).toBeLessThan(1e-6);
+    expect(quatAngleBetween(ctl.targetQuat, qFrozen)).toBeLessThan(1e-6);
+
+    // Motion relative to the new anchor still steers the arm.
+    run(ctl, obsAt([0.8, 0.7], 2.5, back), 1.0);
+    expect(ctl.targetPos[1]).toBeGreaterThan(frozen[1] + 0.03);
+  });
+
+  it("counts a freeze toggled with no hand in view", () => {
+    const ctl = make();
+    settle(ctl);
+    run(ctl, obsAt([0.4, 0.45]), 1.0);
+    const frozen: Vec3 = [...ctl.targetPos] as Vec3;
+    ctl.tick(null, DT);
+    ctl.manualFreeze = true; // pressed and released between frames
+    ctl.manualFreeze = false;
+    run(ctl, obsAt([0.75, 0.65], 2.4), 0.5);
+    expect(vecNorm(vecSub(ctl.targetPos, frozen))).toBeLessThan(1e-6);
+  });
+
   it("rebases after a manual freeze too", () => {
     const ctl = make();
     settle(ctl);
@@ -222,9 +318,8 @@ describe("tracking", () => {
       ctl.tick(obsAt([x, 0.5]), DT);
     }
     const ideal = ctl.mapper.mapPosition([x, 0.5], 2.0);
-    // Image units/s -> m/s: the 0.7-wide active image strip spans the
-    // 0.68 m workspace in y.
-    const speed = (0.3 / seconds) * (0.68 / 0.7);
+    // Image units/s -> m/s through the lateral gain (aspect is 1 here).
+    const speed = (0.3 / seconds) * MAPPING.posGain;
     const lagSec = Math.abs(ideal[1] - ctl.targetPos[1]) / speed;
     expect(lagSec).toBeLessThan(0.09);
 

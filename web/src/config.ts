@@ -38,14 +38,28 @@ export const SCENE = {
 };
 
 export const MAPPING = {
-  imgXRange: [0.15, 0.85] as [number, number],
-  imgYRange: [0.15, 0.85] as [number, number],
+  /**
+   * Lateral gain: metres of tool travel per *image height* of hand
+   * travel. Image x is divided by the frame aspect first, so the gain is
+   * isotropic — 10 cm of hand motion moves the tool the same distance
+   * sideways as upward, instead of sideways feeling ~2x sluggish on a
+   * 16:9 frame. At 1.2, sweeping the full workspace (0.68 m wide, 0.50 m
+   * tall) costs 0.57 / 0.42 frame heights, so the hand stays well inside
+   * the camera's view. Raise it for a twitchier arm, lower it for finer
+   * placement.
+   */
+  posGain: 1.2,
   // Depth from apparent hand size (poseFeatures.apparentScale, image
-  // height per meter), as ratios of the calibrated neutral size.
-  // The default only matters before the first calibration.
+  // height per meter). Apparent size is proportional to 1 / distance, so
+  // the map inverts it first and works in *distance* — otherwise the
+  // near half of the reach eats most of the hand travel and the far half
+  // feels dead. The window is a +-20% change in hand distance: about
+  // +-11 cm at a 55 cm neutral, covering the arm's 34 cm of reach.
+  // Near maps to full reach and far to the retracted end: the hand
+  // coming toward the camera pushes the arm out (see mapping.ts).
   defaultHandScale: 1.9,
-  depthNearRatio: 1.6,
-  depthFarRatio: 0.6,
+  depthNearDist: 0.8,
+  depthFarDist: 1.2,
   maxTiltRad: 1.2,
 };
 
@@ -68,6 +82,21 @@ export const CONTROL = {
   posMinCutoff: 1.0,
   posBeta: 2.5,
   posDCutoff: 1.0,
+  // Depth (robot x) is filtered on its own, not as part of the position
+  // vector: the shared One Euro speed term let a fast *lateral* sweep
+  // open the cutoff for depth too, passing the noisiest axis straight
+  // through at the worst moment. Its own filter is slower than the
+  // lateral one, which suits a cue recovered from apparent hand size.
+  depthMinCutoff: 0.7,
+  depthBeta: 3.0,
+  depthDCutoff: 1.0,
+  // Dead zone the depth target must escape before the arm follows, in
+  // metres of reach. Raising a hand also swings it slightly toward the
+  // camera (the forearm pivots on an arc), so pure vertical intent
+  // leaks a little depth; this absorbs that without blunting a
+  // deliberate push, which clears it in the first centimetre or two of
+  // hand travel.
+  depthSlop: 0.02,
   // Same for orientation; beta in Hz per (rad/s).
   oriMinCutoff: 2.0,
   oriBeta: 1.0,
