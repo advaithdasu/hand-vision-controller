@@ -5,7 +5,6 @@ import pytest
 from handarm.config import HOME_Q, SCENE_XML, IKConfig
 from handarm.ik import DLSSolver
 from handarm.kinematics import ArmKinematics
-from handarm.transforms import quat_angle_between
 
 
 @pytest.fixture(scope="module")

@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from handarm.config import HOME_Q
+from handarm.config import HOME_Q, IKConfig
+from handarm.ik import DLSSolver
 from handarm.kinematics import ArmKinematics
 from handarm.sim import ArmSim
 
@@ -41,9 +42,6 @@ def test_arm_tracks_joint_command(sim):
 
 def test_end_effector_follows_ik_pipeline(sim):
     """Integration: command a Cartesian shift via IK, arm should get there."""
-    from handarm.config import IKConfig
-    from handarm.ik import DLSSolver
-
     sim.reset()
     kin = ArmKinematics(sim.model)
     solver = DLSSolver(kin, IKConfig())

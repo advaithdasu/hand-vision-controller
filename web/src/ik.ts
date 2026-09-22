@@ -9,7 +9,14 @@
 
 import { IK } from "./config";
 import { clampJoints, fk, jacobian } from "./kinematics";
-import { orientationError, type Quat, type Vec3, vecNorm } from "./transforms";
+import {
+  orientationError,
+  type Quat,
+  vecClampNorm,
+  vecNorm,
+  vecSub,
+  type Vec3,
+} from "./transforms";
 
 export interface IKResult {
   q: number[];
@@ -92,11 +99,7 @@ function descend(
     // damping threshold has a fixed geometric meaning.
     manip = Math.sqrt(Math.max(detOnly(matMulT(J)), 0));
 
-    let ePos: Vec3 = [
-      targetPos[0] - f.pos[0],
-      targetPos[1] - f.pos[1],
-      targetPos[2] - f.pos[2],
-    ];
+    const ePos = vecSub(targetPos, f.pos);
     const eOri = orientationError(targetQuat, f.quat);
     posErr = vecNorm(ePos);
     oriErr = vecNorm(eOri);
@@ -105,11 +108,10 @@ function descend(
     }
 
     // Clamp the translational error so distant targets pull smoothly.
-    if (posErr > IK.maxPosErr) {
-      const s = IK.maxPosErr / posErr;
-      ePos = [ePos[0] * s, ePos[1] * s, ePos[2] * s];
-    }
-    const e = [...ePos, ...eOri.map((v) => v * IK.oriWeight)];
+    const e = [
+      ...vecClampNorm(ePos, IK.maxPosErr),
+      ...eOri.map((v) => v * IK.oriWeight),
+    ];
 
     // Weight the orientation rows.
     const Jw = J.map((row, r) =>
@@ -134,11 +136,7 @@ function descend(
   }
 
   const f = fk(q);
-  posErr = vecNorm([
-    targetPos[0] - f.pos[0],
-    targetPos[1] - f.pos[1],
-    targetPos[2] - f.pos[2],
-  ]);
+  posErr = vecNorm(vecSub(targetPos, f.pos));
   oriErr = vecNorm(orientationError(targetQuat, f.quat));
   const converged = posErr < IK.posTol && oriErr < IK.oriTol;
   return { q, posErr, oriErr, iters: it - 1, converged, manipulability: manip };

@@ -17,22 +17,23 @@
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
 
-import { CHAIN, fk } from "./kinematics";
+import { SCENE } from "./config";
+import { CHAIN, fk, type FKResult } from "./kinematics";
 import {
   matrixFromQuat,
   matTranspose3,
+  matVec3,
   orientationError,
   type Quat,
   quatConjugate,
   quatMultiply,
   quatSlerp,
-  type Vec3,
   vecAdd,
+  vecClampNorm,
+  type Vec3,
   vecNorm,
   vecSub,
-  matVec3,
 } from "./transforms";
-import { type FKResult } from "./kinematics";
 
 /** The page's accent color, so a rebrand is one CSS edit (style.css --accent). */
 function cssAccent(): number {
@@ -53,18 +54,11 @@ const COLORS = {
   target: 0x34e07a,
 };
 
-const CUBE_HALF = 0.02;
-const GRASP_RADIUS = 0.055; // tcp-to-cube-center distance for a valid grasp
-const GRASP_CLOSED_APERTURE = 0.25; // grip opening below which a grasp engages
 const HELD_MAX_SPEED = 4.0; // m/s the servo may use to catch up to the tool
 const HELD_MAX_ANGVEL = 25.0; // rad/s
 const RELEASE_MAX_SPEED = 1.5; // m/s carried over when the gripper opens
 const HIGHLIGHT_INTENSITY = 0.45;
 const PHYSICS_HZ = 120;
-const CUBE_STARTS: Vec3[] = [
-  [0.42, -0.12, CUBE_HALF],
-  [0.5, 0.06, CUBE_HALF],
-];
 const CUBE_COLORS = [COLORS.orange, COLORS.blue];
 
 interface Cube {
@@ -248,7 +242,7 @@ export class ArmScene {
   }
 
   private buildObjects(): void {
-    const trayCenter: Vec3 = [0.36, 0.26, 0];
+    const { trayCenter } = SCENE;
     const trayParts: [Vec3, Vec3][] = [
       // [half extents, local position]
       [[0.09, 0.09, 0.006], [0, 0, 0.006]],
@@ -272,7 +266,7 @@ export class ArmScene {
       );
     }
 
-    CUBE_STARTS.forEach((pos, i) => this.spawnCube(pos, CUBE_COLORS[i]));
+    SCENE.cubeStarts.forEach((pos, i) => this.spawnCube(pos, CUBE_COLORS[i]));
   }
 
   private spawnCube(pos: Vec3, color: number): void {
@@ -280,12 +274,13 @@ export class ArmScene {
       RAPIER.RigidBodyDesc.dynamic().setTranslation(...pos).setCcdEnabled(true),
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(CUBE_HALF, CUBE_HALF, CUBE_HALF)
+      RAPIER.ColliderDesc.cuboid(SCENE.cubeHalf, SCENE.cubeHalf, SCENE.cubeHalf)
         .setDensity(750)
         .setFriction(1.0),
       body,
     );
-    const mesh = this.box(CUBE_HALF * 2, CUBE_HALF * 2, CUBE_HALF * 2, color);
+    const side = SCENE.cubeHalf * 2;
+    const mesh = this.box(side, side, side, color);
     const material = mesh.material as THREE.MeshStandardMaterial;
     material.emissive.setHex(color);
     material.emissiveIntensity = 0;
@@ -342,10 +337,8 @@ export class ArmScene {
     this.grip = 1;
     this.cubes.forEach((cube, i) => {
       this.release(cube, false);
-      cube.body.setTranslation(
-        { x: CUBE_STARTS[i][0], y: CUBE_STARTS[i][1], z: CUBE_STARTS[i][2] },
-        true,
-      );
+      const [x, y, z] = SCENE.cubeStarts[i];
+      cube.body.setTranslation({ x, y, z }, true);
       cube.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
       cube.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -430,22 +423,15 @@ export class ArmScene {
       const wantQuat = quatMultiply(quat, cube.holdOffset.quat);
 
       const t = cube.body.translation();
-      let v: Vec3 = [(want[0] - t.x) / h, (want[1] - t.y) / h, (want[2] - t.z) / h];
-      const speed = vecNorm(v);
-      if (speed > HELD_MAX_SPEED) {
-        const s = HELD_MAX_SPEED / speed;
-        v = [v[0] * s, v[1] * s, v[2] * s];
-      }
+      const v = vecClampNorm(
+        [(want[0] - t.x) / h, (want[1] - t.y) / h, (want[2] - t.z) / h],
+        HELD_MAX_SPEED,
+      );
       cube.body.setLinvel({ x: v[0], y: v[1], z: v[2] }, true);
 
       const r = cube.body.rotation();
       const e = orientationError(wantQuat, [r.x, r.y, r.z, r.w]);
-      let w: Vec3 = [e[0] / h, e[1] / h, e[2] / h];
-      const rate = vecNorm(w);
-      if (rate > HELD_MAX_ANGVEL) {
-        const s = HELD_MAX_ANGVEL / rate;
-        w = [w[0] * s, w[1] * s, w[2] * s];
-      }
+      const w = vecClampNorm([e[0] / h, e[1] / h, e[2] / h], HELD_MAX_ANGVEL);
       cube.body.setAngvel({ x: w[0], y: w[1], z: w[2] }, true);
     }
   }
@@ -469,22 +455,19 @@ export class ArmScene {
     // Drop, don't fling: cap the carried-over speed and shed the wrist's
     // spin, which the servo can leave at tens of rad/s.
     const lv = cube.body.linvel();
-    let v: Vec3 = keepVelocity ? [lv.x, lv.y, lv.z] : [0, 0, 0];
-    const speed = vecNorm(v);
-    if (speed > RELEASE_MAX_SPEED) {
-      const s = RELEASE_MAX_SPEED / speed;
-      v = [v[0] * s, v[1] * s, v[2] * s];
-    }
+    const v: Vec3 = keepVelocity
+      ? vecClampNorm([lv.x, lv.y, lv.z], RELEASE_MAX_SPEED)
+      : [0, 0, 0];
     cube.body.setLinvel({ x: v[0], y: v[1], z: v[2] }, true);
     cube.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   }
 
   private updateGrasp(f: FKResult): void {
-    const closed = this.grip < GRASP_CLOSED_APERTURE;
+    const closed = this.grip < SCENE.graspClosedAperture;
     // Nearest cube within reach of the tool, for the grasp and the glow.
     let nearest: Cube | null = null;
     let nearestRel: Vec3 = [0, 0, 0];
-    let nearestDist = GRASP_RADIUS;
+    let nearestDist = SCENE.graspRadius;
     for (const cube of this.cubes) {
       const t = cube.body.translation();
       const rel = vecSub([t.x, t.y, t.z], f.pos);

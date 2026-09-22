@@ -1,4 +1,9 @@
-/** Central configuration — TypeScript port of handarm/config.py. */
+/**
+ * Central configuration — TypeScript port of handarm/config.py, plus the
+ * scene layout that mirrors assets/scene.xml.
+ */
+
+import { type Vec3 } from "./transforms";
 
 export const HOME_Q = [0, 0.55, 0.85, 0, 0.75, 0];
 
@@ -12,6 +17,24 @@ export const WORKSPACE: WorkspaceBox = {
   x: [0.26, 0.6],
   y: [-0.34, 0.34],
   z: [0.05, 0.55],
+};
+
+const CUBE_HALF = 0.02;
+
+/** Shared so the renderer, the scripted demo, and the tests can't drift. */
+export const SCENE = {
+  cubeHalf: CUBE_HALF,
+  cubeStarts: [
+    [0.42, -0.12, CUBE_HALF],
+    [0.5, 0.06, CUBE_HALF],
+  ] as Vec3[],
+  trayCenter: [0.36, 0.26, 0] as Vec3,
+  /** Half extent of the tray floor inside its walls. */
+  trayInner: 0.078,
+  /** tcp-to-cube-center distance at which a closing gripper grasps. */
+  graspRadius: 0.055,
+  /** Gripper opening below which a grasp engages. */
+  graspClosedAperture: 0.25,
 };
 
 export const MAPPING = {

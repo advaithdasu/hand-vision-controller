@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0.1] - 2026-09-21
+
+Maintenance release: no behavior change, no new features.
+
+### Fixed
+- CI: every run was annotated "Node.js 20 is deprecated" because four
+  actions still targeted a Node 20 runtime. Bumped `actions/checkout`,
+  `actions/setup-node`, `actions/setup-python`, and `pnpm/action-setup`.
+- `handarm.__version__` had been left at 0.1.0 for two releases; it now
+  matches `VERSION` and `web/package.json`.
+- Browser build printed a chunk-size warning on every run: the limit
+  (2000 kB) sat below the scene chunk it was meant to cover.
+
+### Changed
+- Scene layout (cube size and start poses, tray center and inner extent,
+  grasp radius and closed aperture) lives once in `web/src/config.ts`
+  instead of being duplicated across the renderer, the autopilot, and the
+  tests, where three copies were kept in sync by comment.
+- New `vecClampNorm` in `web/src/transforms.ts` replaces four hand-inlined
+  copies of "saturate a vector's magnitude" in the held-cube servo, the
+  release path, and the IK error clamp.
+- `TeleopApp.hud_lines` builds its multi-part strings as named locals
+  rather than implicit concatenation inside tuple literals, where a
+  dropped comma would silently merge two HUD lines.
+- Tests: removed an unused import and an unused parameter, hoisted
+  function-local imports, and derived the sweep-step count from its
+  duration instead of hardcoding both.
+
 ## [0.3.0.0] - 2026-09-04
 
 Autopilot release: the demo works for visitors with no camera, and the

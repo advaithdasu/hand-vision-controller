@@ -10,6 +10,7 @@
  */
 
 import type { TeleopController } from "./app";
+import { SCENE } from "./config";
 import { TOOL_DOWN_QUAT } from "./mapping";
 import { type Quat, quatSlerp, type Vec3 } from "./transforms";
 
@@ -33,12 +34,10 @@ export interface Segment {
   verifyGrasp?: boolean;
 }
 
-/** Tray floor center (matches armScene.ts / assets/scene.xml). */
-export const TRAY_CENTER: Vec3 = [0.36, 0.26, 0];
 /** Drop slots inside the tray, one per cube, spread along its x axis. */
 export const DROP_SLOTS: Vec3[] = [
-  [TRAY_CENTER[0] - 0.035, TRAY_CENTER[1], 0],
-  [TRAY_CENTER[0] + 0.035, TRAY_CENTER[1], 0],
+  [SCENE.trayCenter[0] - 0.035, SCENE.trayCenter[1], 0],
+  [SCENE.trayCenter[0] + 0.035, SCENE.trayCenter[1], 0],
 ];
 
 const HOVER_Z = 0.15; // above the cube center before descending

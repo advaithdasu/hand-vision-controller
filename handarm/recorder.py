@@ -28,7 +28,7 @@ class Recorder:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.path = self.out_dir / f"demo-{stamp}.jsonl"
-        self._fh = open(self.path, "w")
+        self._fh = open(self.path, "w")  # noqa: SIM115 — closed in stop()
         self._t0 = time.perf_counter()
         return self.path
 

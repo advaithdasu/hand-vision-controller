@@ -4,6 +4,8 @@ Exercises TeleopApp.process_hand + solve_and_command end to end: gesture
 handling, calibration, target mapping, IK, and the physics response.
 """
 
+import time
+
 import numpy as np
 import pytest
 
@@ -52,7 +54,7 @@ DT = 1 / 30
 
 
 def drive(app, obs, seconds):
-    for _ in range(int(round(seconds / DT))):
+    for _ in range(round(seconds / DT)):
         app.tick(obs, DT)
         app.sim.step(DT)
 
@@ -245,21 +247,23 @@ def test_lost_hand_holds_position(app):
 def test_fast_sweep_tracks_with_little_lag(app):
     settle(app)
     drive(app, obs_at([0.35, 0.5]), 1.0)
-    seconds, n = 0.4, 12
+    # Sweep 0.3 of the image width in 0.4 s.
+    seconds = 0.4
+    n = round(seconds / DT)
     x = 0.35
     for i in range(1, n + 1):
         x = 0.35 + 0.3 * i / n
         app.tick(obs_at([x, 0.5]), DT)
     ideal = app.mapper.map_position(np.array([x, 0.5]), 2.0)
-    speed = (0.3 / seconds) * (0.68 / 0.7)  # m/s in robot y
+    # Image units/s -> m/s: the 0.7-wide active image strip spans the
+    # 0.68 m workspace in y (~0.7 m/s here).
+    speed = (0.3 / seconds) * (0.68 / 0.7)
     lag_sec = abs(ideal[1] - app.target_pos[1]) / speed
     assert lag_sec < 0.09
 
 
 def test_realtime_budget(app):
     """One control tick (IK + 1/30 s physics) must fit a 30 fps budget."""
-    import time
-
     settle(app)  # warm up
     t0 = time.perf_counter()
     n = 60
