@@ -35,6 +35,14 @@ export function vecNormalize(a: Vec3): Vec3 {
   return [a[0] / n, a[1] / n, a[2] / n];
 }
 
+/** Saturate a vector's magnitude at `max`, keeping its direction. */
+export function vecClampNorm(a: Vec3, max: number): Vec3 {
+  const n = vecNorm(a);
+  if (n <= max) return a;
+  const s = max / n;
+  return [a[0] * s, a[1] * s, a[2] * s];
+}
+
 export function matMul3(a: Mat3, b: Mat3): Mat3 {
   const out: Mat3 = [
     [0, 0, 0],

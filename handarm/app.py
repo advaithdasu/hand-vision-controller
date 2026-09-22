@@ -29,12 +29,12 @@ import cv2
 import numpy as np
 
 from . import pose_features as pf
+from .autopilot import Autopilot, SimPlant
 from .config import HOME_Q, AppConfig
 from .filters import OneEuroFilter, QuaternionLowPass, ScalarLowPass
 from .ik import DLSSolver
 from .kinematics import ArmKinematics
 from .latency import LatencyProfiler
-from .autopilot import Autopilot, SimPlant
 from .mapping import TOOL_DOWN_QUAT, HandToRobotMapper
 from .overlay import compose_split, draw_gripper_bar, draw_hand_skeleton, draw_hud
 from .recorder import Recorder, load_recording
@@ -257,25 +257,28 @@ class TeleopApp:
         else:
             mode = "pos + orientation" if self._orientation_on else "position only"
         grip = "LATCHED" if self.grip_latched else ("CLOSED" if self.gripping else "open")
+        stages = (
+            f"capture {p.mean_ms('capture'):4.1f}  detect {p.mean_ms('detect'):4.1f}  "
+            f"ik {p.mean_ms('ik'):4.1f}  sim {p.mean_ms('sim'):4.1f}  "
+            f"draw {p.mean_ms('draw'):4.1f} ms"
+        )
         lines = [
             (f"FPS {p.fps():5.1f}   end-to-end {p.mean_ms('total'):5.1f} ms", False),
-            (f"capture {p.mean_ms('capture'):4.1f}  detect {p.mean_ms('detect'):4.1f}  "
-             f"ik {p.mean_ms('ik'):4.1f}  sim {p.mean_ms('sim'):4.1f}  "
-             f"draw {p.mean_ms('draw'):4.1f} ms", False),
+            (stages, False),
             (f"mode: {mode}", self.frozen),
             (f"hand: {'tracking' if hand_visible else 'NOT FOUND'}", not hand_visible),
             (f"grip: {grip}  aperture {self.grip_opening:0.2f}",
              self.gripping or self.grip_latched),
         ]
         if ik is not None:
-            lines.append(
-                (f"ik: {ik.iters} it  err {ik.pos_err*1000:5.1f} mm / "
-                 f"{np.degrees(ik.ori_err):4.1f} deg  w {ik.manipulability:0.3f}",
-                 not ik.converged)
+            ik_line = (
+                f"ik: {ik.iters} it  err {ik.pos_err * 1000:5.1f} mm / "
+                f"{np.degrees(ik.ori_err):4.1f} deg  w {ik.manipulability:0.3f}"
             )
+            lines.append((ik_line, not ik.converged))
         if not self.calibrated:
             if hand_visible:
-                n = int(round(self.calib_progress * 10))
+                n = round(self.calib_progress * 10)
                 lines.append((f"hold still to lock on  [{'#' * n}{'.' * (10 - n)}]", True))
             else:
                 lines.append(("show your open hand to the camera (c re-zeros)", True))

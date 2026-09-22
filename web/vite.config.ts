@@ -7,6 +7,6 @@ export default defineConfig({
   base: process.env.BASE_PATH ?? "/",
   build: {
     target: "es2022",
-    chunkSizeWarningLimit: 2000, // three + rapier + mediapipe are heavy
+    chunkSizeWarningLimit: 3000, // three + rapier + mediapipe are heavy
   },
 });

@@ -1,0 +1,4 @@
+web/public/mediapipe/** linguist-vendored
+*.wasm linguist-vendored
+*.task linguist-vendored linguist-generated
+web/pnpm-lock.yaml linguist-generated

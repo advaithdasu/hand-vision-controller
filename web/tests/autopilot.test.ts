@@ -1,27 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { type ArmPlant, TeleopController } from "../src/app";
-import {
-  Autopilot,
-  type AutopilotPlant,
-  DROP_SLOTS,
-  planPickAndPlace,
-  TRAY_CENTER,
-} from "../src/autopilot";
-import { HOME_Q } from "../src/config";
+import { Autopilot, type AutopilotPlant, DROP_SLOTS, planPickAndPlace } from "../src/autopilot";
+import { HOME_Q, SCENE } from "../src/config";
 import { solveIK } from "../src/ik";
 import { fk } from "../src/kinematics";
 import { TOOL_DOWN_QUAT } from "../src/mapping";
 import { type Vec3, vecNorm, vecSub } from "../src/transforms";
 
 const DT = 1 / 60;
-const CUBE_HALF = 0.02;
-const CUBE_STARTS: Vec3[] = [
-  [0.42, -0.12, CUBE_HALF],
-  [0.5, 0.06, CUBE_HALF],
-];
-const GRASP_RADIUS = 0.055; // as armScene.ts
-const TRAY_INNER = 0.078; // half extent inside the walls
+const { cubeHalf, cubeStarts, graspClosedAperture, graspRadius, trayCenter, trayInner } = SCENE;
 
 /**
  * Stand-in for ArmScene's grasp model: a cube within reach of the tool
@@ -31,7 +19,7 @@ const TRAY_INNER = 0.078; // half extent inside the walls
  * reaches each waypoint within the time the script allows.
  */
 class FakeScene implements ArmPlant, AutopilotPlant {
-  cubes: Vec3[] = CUBE_STARTS.map((c) => [...c] as Vec3);
+  cubes: Vec3[] = cubeStarts.map((c) => [...c] as Vec3);
   private q = [...HOME_Q];
   private grip = 1;
   private heldIdx = -1;
@@ -43,16 +31,16 @@ class FakeScene implements ArmPlant, AutopilotPlant {
     this.q = [...q];
   }
   setGripper(opening: number): void {
-    if (opening < 0.25 && this.grip >= 0.25) this.closes++;
+    if (opening < graspClosedAperture && this.grip >= graspClosedAperture) this.closes++;
     this.grip = opening;
   }
   setTargetMarker(): void {}
   step(): void {
     const tcp = fk(this.q).pos;
-    if (this.grip < 0.25) {
+    if (this.grip < graspClosedAperture) {
       if (this.heldIdx < 0 && this.graspWorks) {
         this.cubes.forEach((c, i) => {
-          if (this.heldIdx < 0 && vecNorm(vecSub(c, tcp)) < GRASP_RADIUS) {
+          if (this.heldIdx < 0 && vecNorm(vecSub(c, tcp)) < graspRadius) {
             this.heldIdx = i;
             this.holdOffset = vecSub(c, tcp);
           }
@@ -60,7 +48,7 @@ class FakeScene implements ArmPlant, AutopilotPlant {
       }
     } else if (this.heldIdx >= 0) {
       const c = this.cubes[this.heldIdx];
-      this.cubes[this.heldIdx] = [c[0], c[1], CUBE_HALF]; // falls straight down
+      this.cubes[this.heldIdx] = [c[0], c[1], cubeHalf]; // falls straight down
       this.heldIdx = -1;
     }
     if (this.heldIdx >= 0) {
@@ -94,7 +82,7 @@ function runUntil(ap: Autopilot, done: () => boolean, maxSeconds: number): numbe
 
 describe("planPickAndPlace", () => {
   it("produces waypoints the arm can reach with tool-down orientation", () => {
-    for (const [i, cube] of CUBE_STARTS.entries()) {
+    for (const [i, cube] of cubeStarts.entries()) {
       let q = [...HOME_Q];
       for (const seg of planPickAndPlace(cube, DROP_SLOTS[i])) {
         // Warm-start through the path as the live loop would.
@@ -109,8 +97,8 @@ describe("planPickAndPlace", () => {
 
   it("drops every slot inside the tray walls", () => {
     for (const slot of DROP_SLOTS) {
-      expect(Math.abs(slot[0] - TRAY_CENTER[0])).toBeLessThan(TRAY_INNER - CUBE_HALF);
-      expect(Math.abs(slot[1] - TRAY_CENTER[1])).toBeLessThan(TRAY_INNER - CUBE_HALF);
+      expect(Math.abs(slot[0] - trayCenter[0])).toBeLessThan(trayInner - cubeHalf);
+      expect(Math.abs(slot[1] - trayCenter[1])).toBeLessThan(trayInner - cubeHalf);
     }
   });
 });
@@ -123,8 +111,8 @@ describe("Autopilot", () => {
     expect(t).toBeLessThan(30);
     expect(scene.holding).toBe(false);
     scene.cubes.forEach((c, i) => {
-      expect(Math.abs(c[0] - TRAY_CENTER[0]), `cube ${i} x`).toBeLessThan(TRAY_INNER - CUBE_HALF);
-      expect(Math.abs(c[1] - TRAY_CENTER[1]), `cube ${i} y`).toBeLessThan(TRAY_INNER - CUBE_HALF);
+      expect(Math.abs(c[0] - trayCenter[0]), `cube ${i} x`).toBeLessThan(trayInner - cubeHalf);
+      expect(Math.abs(c[1] - trayCenter[1]), `cube ${i} y`).toBeLessThan(trayInner - cubeHalf);
       expect(vecNorm(vecSub([c[0], c[1], 0], DROP_SLOTS[i])), `cube ${i} slot`).toBeLessThan(0.02);
     });
     // Exactly one grasp per cube: no re-grabs, no fumbles.
@@ -151,7 +139,7 @@ describe("Autopilot", () => {
     // Three attempts per cube, each of which closes the gripper once.
     expect(scene.closes).toBe(6);
     // Nothing was placed.
-    scene.cubes.forEach((c, i) => expect(vecNorm(vecSub(c, CUBE_STARTS[i]))).toBeLessThan(1e-9));
+    scene.cubes.forEach((c, i) => expect(vecNorm(vecSub(c, cubeStarts[i]))).toBeLessThan(1e-9));
   });
 
   it("pauses while frozen and resumes on unfreeze", () => {
@@ -170,7 +158,7 @@ describe("Autopilot", () => {
   it("restart() begins a fresh round after a scene reset", () => {
     const { scene, ap, ctl } = rig();
     runUntil(ap, () => ap.roundComplete, 40);
-    scene.cubes = CUBE_STARTS.map((c) => [...c] as Vec3);
+    scene.cubes = cubeStarts.map((c) => [...c] as Vec3);
     ctl.resetControl();
     ap.restart();
     expect(ap.roundComplete).toBe(false);

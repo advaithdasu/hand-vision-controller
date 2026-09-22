@@ -12,20 +12,22 @@ import {
   vecSub,
 } from "./transforms";
 
+// MediaPipe hand landmark indices.
 export const WRIST = 0;
 export const THUMB_TIP = 4;
 export const INDEX_MCP = 5, INDEX_PIP = 6, INDEX_TIP = 8;
-export const MIDDLE_MCP = 9, MIDDLE_TIP = 12;
-export const RING_MCP = 13, RING_TIP = 16;
-export const PINKY_MCP = 17, PINKY_TIP = 20;
+export const MIDDLE_MCP = 9, MIDDLE_PIP = 10, MIDDLE_TIP = 12;
+export const RING_MCP = 13, RING_PIP = 14, RING_TIP = 16;
+export const PINKY_MCP = 17, PINKY_PIP = 18, PINKY_TIP = 20;
 
 export type Landmarks = Vec3[]; // length 21
 
+/** [mcp, pip, tip] per finger; the thumb is handled separately. */
 export const FINGERS: Record<string, [number, number, number]> = {
   index: [INDEX_MCP, INDEX_PIP, INDEX_TIP],
-  middle: [MIDDLE_MCP, 10, MIDDLE_TIP],
-  ring: [RING_MCP, 14, RING_TIP],
-  pinky: [PINKY_MCP, 18, PINKY_TIP],
+  middle: [MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP],
+  ring: [RING_MCP, RING_PIP, RING_TIP],
+  pinky: [PINKY_MCP, PINKY_PIP, PINKY_TIP],
 };
 
 /** Skeleton edges for drawing the overlay. */

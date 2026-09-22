@@ -213,7 +213,7 @@ describe("tracking", () => {
     const ctl = make();
     settle(ctl);
     run(ctl, obsAt([0.35, 0.5]), 1.0);
-    // 0.3 of the image in 0.4 s: ~0.7 m/s across the workspace.
+    // Sweep 0.3 of the image width in 0.4 s (~0.7 m/s across the workspace).
     const seconds = 0.4;
     const n = Math.round(seconds / DT);
     let x = 0.35;
@@ -222,7 +222,9 @@ describe("tracking", () => {
       ctl.tick(obsAt([x, 0.5]), DT);
     }
     const ideal = ctl.mapper.mapPosition([x, 0.5], 2.0);
-    const speed = (0.3 / seconds) * (0.68 / 0.7); // m/s in robot y
+    // Image units/s -> m/s: the 0.7-wide active image strip spans the
+    // 0.68 m workspace in y.
+    const speed = (0.3 / seconds) * (0.68 / 0.7);
     const lagSec = Math.abs(ideal[1] - ctl.targetPos[1]) / speed;
     expect(lagSec).toBeLessThan(0.09);
 
