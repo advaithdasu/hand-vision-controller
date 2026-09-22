@@ -65,6 +65,15 @@ h1 {
   border: 1px solid #262a31;
 }
 
+#stage:has(#landing:not(.hidden)) .panel {
+  background: transparent;
+  border-color: transparent;
+}
+
+#stage:has(#landing:not(.hidden)) #hud {
+  display: none;
+}
+
 #video {
   position: absolute;
   inset: 0;
