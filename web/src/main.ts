@@ -102,10 +102,20 @@ type Session =
 /** The running session, if any — event handlers wired once refer to this. */
 let active: Session | null = null;
 
-function endSession(): void {
-  if (active?.mode === "hand") active.stream.getTracks().forEach((t) => t.stop());
+/**
+ * Tear down the running session. `next` is the session about to replace
+ * it, if any: a hand session has already attached its stream to the video
+ * element by the time it gets here, so that stream must survive the
+ * teardown — clearing srcObject unconditionally blanks the camera panel
+ * and stops MediaPipe from ever seeing a frame.
+ */
+function endSession(next?: Session): void {
+  const keep = next?.mode === "hand" ? next.stream : null;
+  if (active?.mode === "hand" && active.stream !== keep) {
+    active.stream.getTracks().forEach((t) => t.stop());
+  }
   active = null;
-  video.srcObject = null;
+  if (video.srcObject !== keep) video.srcObject = null;
   camPlaceholder.hidden = true;
   takeoverStatus.textContent = "";
   overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
@@ -129,7 +139,7 @@ function setLoading(text: string, frac: number | null): void {
 }
 
 function enterSession(s: Session): void {
-  endSession();
+  endSession(s);
   active = s;
   landing.classList.add("hidden");
   setLoading("", null);

@@ -4,7 +4,37 @@
  * its tests inside the importer.
  */
 
-import { type Landmarks } from "../src/poseFeatures";
+import { FOCAL_HEIGHTS, type Landmarks } from "../src/poseFeatures";
+
+/**
+ * Pinhole projection of a hand: world landmarks (meters, camera axes)
+ * with the hand placed `at` metres off the optical axis at `depth`
+ * metres, projected to normalized image coordinates. The apparent scale
+ * it produces is exactly FOCAL_HEIGHTS / depth.
+ *
+ * The landmarks are re-centred on their centroid first, because that is
+ * where MediaPipe puts the world-landmark origin ("the hand's
+ * approximate geometric center"); leaving a synthetic hand hanging off
+ * its wrist would place it 9 cm off-axis and manufacture perspective
+ * effects a real hand doesn't have.
+ */
+export function projectPinhole(
+  world: Landmarks,
+  depth: number,
+  aspect: number,
+  at: [number, number] = [0, 0],
+): Landmarks {
+  const c: [number, number, number] = [0, 0, 0];
+  for (const p of world) for (let i = 0; i < 3; i++) c[i] += p[i] / world.length;
+  return world.map((p): [number, number, number] => {
+    const z = depth + p[2] - c[2];
+    return [
+      0.5 + (FOCAL_HEIGHTS * (at[0] + p[0] - c[0])) / z / aspect,
+      0.5 + (FOCAL_HEIGHTS * (at[1] + p[1] - c[1])) / z,
+      p[2],
+    ];
+  });
+}
 
 /** Same synthetic hands as the Python tests. */
 export function syntheticOpenHand(): Landmarks {

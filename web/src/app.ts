@@ -8,7 +8,7 @@
 
 import type { ArmScene } from "./armScene";
 import { CONTROL, HOME_Q } from "./config";
-import { OneEuroFilter, QuaternionLowPass, ScalarLowPass } from "./filters";
+import { OneEuroFilter, QuaternionLowPass, ScalarLowPass, SlopFilter } from "./filters";
 import { type HandObservation } from "./handTracker";
 import { type IKResult, solveIK } from "./ik";
 import { fk } from "./kinematics";
@@ -24,8 +24,12 @@ export type ArmPlant = Pick<
 
 export class TeleopController {
   readonly mapper = new HandToRobotMapper();
+  /** Lateral (robot y, z) only — depth is filtered separately. */
   private posFilter = new OneEuroFilter(
     CONTROL.posMinCutoff, CONTROL.posBeta, CONTROL.posDCutoff);
+  private depthFilter = new OneEuroFilter(
+    CONTROL.depthMinCutoff, CONTROL.depthBeta, CONTROL.depthDCutoff);
+  private depthSlop = new SlopFilter(CONTROL.depthSlop);
   private oriFilter = new QuaternionLowPass(
     CONTROL.oriMinCutoff, CONTROL.oriBeta, CONTROL.oriDCutoff);
   private pinchFilter = new ScalarLowPass(CONTROL.pinchCutoff);
@@ -43,17 +47,18 @@ export class TeleopController {
   lostTime = 999; // seconds since the hand was last seen
   lastIK: IKResult | null = null;
   lastObs: HandObservation | null = null;
-  frameAspect = 16 / 9;
 
   private _manualFreeze = false;
   private _orientationOn = true;
   // Gesture debounce timers (seconds the current shape has persisted).
   private fistTime = 0;
   private openTime = 0;
-  // Set when tracking resumes after a freeze: the next processed frame
+  // Set when tracking resumes after a pause: the next processed frame
   // re-anchors the maps so the arm continues from its frozen pose.
   private rebasePosPending = false;
   private rebaseOriPending = false;
+  /** Whether the hand is currently driving the arm (see processHand). */
+  private following = false;
   // Calibration gate state.
   private calibHold = 0;
   private calibPrevCenter: [number, number] | null = null;
@@ -62,6 +67,19 @@ export class TeleopController {
     const f = fk(HOME_Q);
     this.targetPos = f.pos;
     this.targetQuat = f.quat;
+  }
+
+  /**
+   * Frame width / height. The mapper needs it to keep its gain
+   * isotropic and apparentScale to stay aspect-correct, so it lives in
+   * one place and this proxies to it.
+   */
+  get frameAspect(): number {
+    return this.mapper.frameAspect;
+  }
+
+  set frameAspect(aspect: number) {
+    this.mapper.frameAspect = aspect;
   }
 
   get frozen(): boolean {
@@ -73,7 +91,10 @@ export class TeleopController {
   }
 
   set manualFreeze(on: boolean) {
-    if (this._manualFreeze && !on) this.markRebase();
+    // Stop following the moment the button goes down, rather than on
+    // the next frame: the button can be toggled with no hand in view,
+    // and the pause still has to count.
+    if (on) this.following = false;
     this._manualFreeze = on;
   }
 
@@ -107,10 +128,20 @@ export class TeleopController {
     this.openTime = 0;
     this.rebasePosPending = false;
     this.rebaseOriPending = false;
+    // Back to the absolute map, anchored on the calibration pose. The
+    // `following` flag is deliberately left alone: a reset is not a
+    // pause, and rebasing here would immediately re-establish the
+    // offset this just cleared.
     this.mapper.posOffset = [0, 0, 0];
-    this.posFilter.reset();
+    this.resetPosFilters();
     this.oriFilter.reset();
     this.pinchFilter.reset();
+  }
+
+  private resetPosFilters(): void {
+    this.posFilter.reset();
+    this.depthFilter.reset();
+    this.depthSlop.reset();
   }
 
   /**
@@ -129,7 +160,9 @@ export class TeleopController {
   }
 
   calibrate(obs: HandObservation): void {
+    const c = pf.palmCenter(obs.imageLandmarks);
     this.mapper.calibrate(
+      [c[0], c[1]],
       pf.apparentScale(obs.imageLandmarks, obs.worldLandmarks, this.frameAspect),
       pf.palmFrame(obs.worldLandmarks),
     );
@@ -138,7 +171,9 @@ export class TeleopController {
     this.calibHold = 0;
     this.rebasePosPending = false;
     this.rebaseOriPending = false;
-    this.posFilter.reset();
+    // The reference is the *raw* pose, so the filters must re-prime from
+    // it too: a stale lagging estimate would offset the whole map.
+    this.resetPosFilters();
     this.oriFilter.reset();
   }
 
@@ -194,10 +229,22 @@ export class TeleopController {
       this.clutched = false;
       this.pinchFilter.reset();
       if (this.gripping) this.gripLatched = true;
-      this.markRebase();
     }
 
-    if (this.frozen) return;
+    if (this.frozen) {
+      this.following = false;
+      return;
+    }
+
+    // Resuming after *any* pause — a released clutch, the freeze
+    // button, tracking that dropped out and came back — re-anchors both
+    // maps onto the pose the arm stopped at, so whatever the hand did
+    // while the arm wasn't following it cannot move the arm now.
+    // Deriving this from one "was I following?" flag rather than
+    // marking each pause site keeps the guarantee whole: a new way to
+    // pause gets it for free instead of having to remember.
+    if (!this.following) this.markRebase();
+    this.following = true;
 
     // A fist-shaped frame never drives the gripper, even before the
     // clutch debounce elapses: a tucked thumb can read as a tight pinch.
@@ -213,10 +260,13 @@ export class TeleopController {
     const xy: [number, number] = [c[0], c[1]];
     if (this.rebasePosPending) {
       this.mapper.rebasePosition(xy, scale, this.targetPos);
-      this.posFilter.reset();
+      this.resetPosFilters();
       this.rebasePosPending = false;
     }
-    this.targetPos = this.posFilter.apply(this.mapper.mapPosition(xy, scale), dt) as Vec3;
+    const raw = this.mapper.mapPosition(xy, scale);
+    const lateral = this.posFilter.apply([raw[1], raw[2]], dt);
+    const depth = this.depthSlop.apply(this.depthFilter.apply([raw[0]], dt)[0]);
+    this.targetPos = [depth, lateral[0], lateral[1]];
 
     let rawQuat: Quat = TOOL_DOWN_QUAT;
     if (this._orientationOn) {
@@ -270,6 +320,11 @@ export class TeleopController {
     }
     // hold implies a lost hand: lostTime resets to 0 whenever obs exists.
     const hold = this.lostTime >= CONTROL.holdAfterLostSec;
+    // The arm has stopped following, so this counts as a pause and the
+    // hand's return has to rebase. Shorter dropouts deliberately don't:
+    // the arm is still being commanded through them, and rebasing on
+    // every dropped frame would ratchet the anchor around.
+    if (hold) this.following = false;
     if (!hold) this.solveAndCommand(dt);
     this.scene.step(dt);
   }

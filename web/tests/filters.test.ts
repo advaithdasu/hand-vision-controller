@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { OneEuroFilter, QuaternionLowPass, ScalarLowPass } from "../src/filters";
+import { OneEuroFilter, QuaternionLowPass, ScalarLowPass, SlopFilter } from "../src/filters";
 import { type Quat, quatAngleBetween } from "../src/transforms";
 
 const DT = 1 / 30;
@@ -100,5 +100,31 @@ describe("dt <= 0 handling", () => {
     quat.apply(q0, DT);
     const qs = quat.apply(q90, DT);
     expect(quatAngleBetween(quat.apply(q90, 0), qs)).toBeLessThan(1e-12);
+  });
+});
+
+describe("SlopFilter", () => {
+  it("absorbs wobble smaller than the slop, anywhere in the range", () => {
+    const f = new SlopFilter(0.02);
+    expect(f.apply(0.4)).toBe(0.4); // first sample passes through
+    for (const v of [0.41, 0.39, 0.415, 0.385]) expect(f.apply(v)).toBe(0.4);
+    // And again after the signal has moved somewhere else entirely.
+    const held = f.apply(1.0); // 0.98: a big move leaves one slop of lag
+    for (const v of [0.99, 0.97, 0.985]) expect(f.apply(v)).toBe(held);
+  });
+
+  it("follows real motion, one slop behind", () => {
+    const f = new SlopFilter(0.02);
+    f.apply(0);
+    expect(f.apply(0.5)).toBeCloseTo(0.48, 9);
+    expect(f.apply(1.0)).toBeCloseTo(0.98, 9);
+    // Reversing costs twice the slop before the output moves again.
+    expect(f.apply(0.97)).toBeCloseTo(0.98, 9);
+    expect(f.apply(0.9)).toBeCloseTo(0.92, 9);
+  });
+
+  it("is a pass-through with zero slop", () => {
+    const f = new SlopFilter();
+    for (const v of [0.3, -1, 7]) expect(f.apply(v)).toBe(v);
   });
 });

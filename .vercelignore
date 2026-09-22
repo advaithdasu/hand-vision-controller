@@ -1,0 +1,8 @@
+/tests/
+/handarm/
+/requirements.txt
+/*.py
+/.venv/
+/.pytest_cache/
+/.ruff_cache/
+/recordings/

@@ -64,14 +64,32 @@ const PALM_SEGMENTS: [number, number][] = [
 const FORESHORTEN_FLOOR = 0.3;
 
 /**
- * Apparent hand size that is invariant to palm orientation.
+ * Nominal focal length in image heights (vertical FOV ~40 deg), used
+ * only to undo perspective skew away from the frame centre. Webcams
+ * vary, but the correction is first-order in 1 / focal, so an estimate
+ * within ~30% removes most of the error; nothing else depends on it.
+ */
+export const FOCAL_HEIGHTS = 1.4;
+
+/**
+ * Apparent hand size that is invariant to palm orientation *and* to
+ * where the hand sits in the frame.
  *
  * The naive proxy (wrist-to-knuckle length in the image) shrinks when the
  * palm pitches toward the camera, so tilting the wrist masquerades as
  * reaching. MediaPipe also returns metric, camera-aligned world landmarks
  * for the same hand; the ratio of the image-plane palm extent to the
- * world-space palm extent *projected onto the same plane* cancels the
+ * world-space palm extent *projected onto the image plane* cancels the
  * foreshortening and is proportional to 1 / depth.
+ *
+ * That projection is only an orthographic one, though, and a pinhole
+ * camera is not orthographic off-axis: a segment spanning dZ in depth
+ * projects to f/Z * (dX - X/Z * dZ), so its apparent length depends on
+ * where in the frame it sits. With a tilted palm near the top of the
+ * frame the skew reaches ~20%, which reads as a depth change — raising
+ * a hand would push or pull the arm as well as lift it. Applying the
+ * same skew to the world segment before measuring it (X/Z and Y/Z come
+ * from the segment's own image position) cancels the term, leaving f/Z.
  *
  * Image x is scaled by the frame aspect so the measure is isotropic (in
  * units of image height per meter).
@@ -85,11 +103,23 @@ export function apparentScale(
   let projSq = 0;
   let fullSq = 0;
   for (const [a, b] of PALM_SEGMENTS) {
-    const dx = (imageLm[b][0] - imageLm[a][0]) * frameAspect;
-    const dy = imageLm[b][1] - imageLm[a][1];
+    // Image positions relative to the principal point (frame centre),
+    // in image heights.
+    const ax = (imageLm[a][0] - 0.5) * frameAspect;
+    const ay = imageLm[a][1] - 0.5;
+    const bx = (imageLm[b][0] - 0.5) * frameAspect;
+    const by = imageLm[b][1] - 0.5;
+    const dx = bx - ax;
+    const dy = by - ay;
     imgSq += dx * dx + dy * dy;
     const w = vecSub(worldLm[b], worldLm[a]);
-    projSq += w[0] * w[0] + w[1] * w[1];
+    // X/Z and Y/Z at the segment's midpoint. MediaPipe's world z grows
+    // away from the camera, matching the pinhole convention.
+    const u = (ax + bx) / (2 * FOCAL_HEIGHTS);
+    const v = (ay + by) / (2 * FOCAL_HEIGHTS);
+    const px = w[0] - u * w[2];
+    const py = w[1] - v * w[2];
+    projSq += px * px + py * py;
     fullSq += w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
   }
   const floorSq = FORESHORTEN_FLOOR * FORESHORTEN_FLOOR * fullSq;
