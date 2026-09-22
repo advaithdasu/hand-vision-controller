@@ -59,7 +59,6 @@ export class TeleopController {
   private rebaseOriPending = false;
   /** Whether the hand is currently driving the arm (see processHand). */
   private following = false;
-  // Calibration gate state.
   private calibHold = 0;
   private calibPrevCenter: [number, number] | null = null;
 

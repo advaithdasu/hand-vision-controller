@@ -353,7 +353,6 @@ export class ArmScene {
     });
   }
 
-  /** True if any cube is currently grasped. */
   get holding(): boolean {
     return this.cubes.some((c) => c.held);
   }
