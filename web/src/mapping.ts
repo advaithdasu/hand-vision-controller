@@ -117,11 +117,14 @@ export class HandToRobotMapper {
   private mapPositionAbsolute(palmXY: [number, number], handScale: number): Vec3 {
     const [hx, hy] = this.isotropic(palmXY);
     const [cx, cy] = this.isotropic(this.centerRef ?? [0.5, 0.5]);
-    // Image is mirrored, so image-right = operator-right. The scene camera
-    // puts robot +y on screen-right, so hand-right -> +y keeps the arm
-    // moving the same direction the operator sees their hand move. Image
+    // Image is mirrored, so image-right = operator-right. Position tracks
+    // the robot's own body frame, not the screen: with the arm's neutral
+    // reach along +x (forward) and +z up, the robot's own right is -y
+    // (forward x up), so hand-right -> -y and hand-left -> +y. That's
+    // control from the robot's point of view, like driving from behind
+    // it, rather than mirroring what the operator sees on screen. Image
     // y grows downward, so it negates into robot +z (up).
-    const y = mid(WORKSPACE.y) + (hx - cx) * MAPPING.posGain;
+    const y = mid(WORKSPACE.y) - (hx - cx) * MAPPING.posGain;
     const z = mid(WORKSPACE.z) - (hy - cy) * MAPPING.posGain;
     // Apparent size is proportional to 1 / distance; invert it so the
     // depth axis is linear in how far the hand actually travelled,

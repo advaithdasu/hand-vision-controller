@@ -258,10 +258,15 @@ button.secondary {
 }
 
 footer {
-  color: var(--muted);
-  font-size: 0.8rem;
+  display: flex;
+  justify-content: center;
 }
 
 footer a {
+  color: var(--muted);
+  display: inline-flex;
+}
+
+footer a:hover {
   color: var(--accent);
 }

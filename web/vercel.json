@@ -1,0 +1,9 @@
+{
+  "redirects": [
+    { "source": "/", "destination": "/hand-control-robot/", "permanent": false }
+  ],
+  "rewrites": [
+    { "source": "/hand-control-robot", "destination": "/" },
+    { "source": "/hand-control-robot/:path*", "destination": "/:path*" }
+  ]
+}

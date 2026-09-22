@@ -48,10 +48,11 @@ describe("position mapping", () => {
     }
   });
 
-  it("maps directions to match the on-screen view", () => {
+  it("maps directions to match the robot's own point of view", () => {
     const m = new HandToRobotMapper();
     const p0 = m.mapPosition([0.5, 0.5], 1.9);
-    expect(m.mapPosition([0.7, 0.5], 1.9)[1]).toBeGreaterThan(p0[1]); // right -> +y (screen-right)
+    // Forward is +x, up is +z, so the robot's own right is -y (forward x up).
+    expect(m.mapPosition([0.7, 0.5], 1.9)[1]).toBeLessThan(p0[1]); // hand-right -> robot's own -y
     expect(m.mapPosition([0.5, 0.3], 1.9)[2]).toBeGreaterThan(p0[2]); // up -> +z
     expect(m.mapPosition([0.5, 0.5], 2.5)[0]).toBeGreaterThan(p0[0]); // closer -> reach out
   });
@@ -87,7 +88,7 @@ describe("position mapping", () => {
     const d = 0.1;
     const across = m.mapPosition([0.5 + d / m.frameAspect, 0.5], 2.0);
     const up = m.mapPosition([0.5, 0.5 - d], 2.0);
-    expect(across[1] - centre[1]).toBeCloseTo(up[2] - centre[2], 9);
+    expect(centre[1] - across[1]).toBeCloseTo(up[2] - centre[2], 9);
     expect(up[2] - centre[2]).toBeCloseTo(d * MAPPING.posGain, 9);
   });
 
@@ -118,7 +119,7 @@ describe("clutch rebasing", () => {
     const resumed = m.mapPosition([0.8, 0.3], 2.6);
     for (let i = 0; i < 3; i++) expect(resumed[i]).toBeCloseTo(frozen[i], 9);
     // Relative motion still works from the new anchor, in the same sense.
-    expect(m.mapPosition([0.85, 0.3], 2.6)[1]).toBeGreaterThan(frozen[1]);
+    expect(m.mapPosition([0.85, 0.3], 2.6)[1]).toBeLessThan(frozen[1]);
     expectInWorkspace(m.mapPosition([0.2, 0.9], 1.0));
   });
 

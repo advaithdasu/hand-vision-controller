@@ -200,7 +200,7 @@ describe("clutch", () => {
 
     // Motion relative to the new anchor still steers the arm.
     run(ctl, obsAt([0.8, 0.65], 2.4), 1.0);
-    expect(ctl.targetPos[1]).toBeGreaterThan(frozen[1] + 0.03);
+    expect(ctl.targetPos[1]).toBeLessThan(frozen[1] - 0.03);
   });
 
   it("ignores where the hand went while tracking was lost", () => {
@@ -229,7 +229,7 @@ describe("clutch", () => {
 
     // Motion relative to the new anchor still steers the arm.
     run(ctl, obsAt([0.8, 0.7], 2.5, back), 1.0);
-    expect(ctl.targetPos[1]).toBeGreaterThan(frozen[1] + 0.03);
+    expect(ctl.targetPos[1]).toBeLessThan(frozen[1] - 0.03);
   });
 
   it("counts a freeze toggled with no hand in view", () => {
